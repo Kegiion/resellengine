@@ -22,7 +22,9 @@ interface ConfigJob {
   platform: Platform;
   keywords: string[];
   maxPrice: number;
+  max_price?: number;
   minDesiredProfit: number;
+  min_desired_profit?: number;
   condition?: string;
   enabled: boolean;
 }
@@ -514,9 +516,9 @@ export default function DashboardClient() {
                       </div>
                     </div>
                     <p className="mt-2 text-sm text-zinc-500">
-                      {job.platform} • {job.keywords.join(", ")} • max {job.maxPrice}€
+                      {job.platform} • {job.keywords.join(", ")} • max {(job.max_price ?? job.maxPrice)}€
                     </p>
-                    <p className="text-xs text-zinc-400">Min. Profit: {job.minDesiredProfit}€</p>
+                    <p className="text-xs text-zinc-400">Min. Profit: {(job.min_desired_profit ?? job.minDesiredProfit)}€</p>
                   </div>
                 ))}
               </div>
