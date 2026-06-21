@@ -35,22 +35,31 @@ interface Config {
   };
 }
 
+interface PipelineStats {
+  scanned: number;
+  spamFiltered: number;
+  ebayChecked: number;
+  profitFiltered: number;
+  imageAnalyses: number;
+  alarms: number;
+}
+
 interface Deal {
   id: string;
   platform: string;
   title: string;
   price: number;
   currency: string;
-  estimated_resell_value: number;
-  fees: number;
-  shipping: number;
-  net_profit: number;
-  roi_percent: number;
+  estimated_resell_value?: number | null;
+  fees?: number | null;
+  shipping?: number | null;
+  net_profit?: number | null;
+  roi_percent?: number | null;
   url: string;
   image_url?: string;
   condition?: string;
   seller?: string;
-  created_at: string;
+  created_at?: string | null;
   optimized_description?: {
     title: string;
     description: string;
@@ -58,20 +67,33 @@ interface Deal {
     condition: string;
     tone: string;
     optimized_at?: string;
-  };
+  } | null;
 }
 
-function formatCurrency(value: number): string {
+function isValidNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function formatCurrency(value: number | null | undefined): string {
+  if (!isValidNumber(value)) return "-- €";
   return new Intl.NumberFormat("de-DE", {
     style: "currency",
     currency: "EUR",
   }).format(value);
 }
 
-function formatRelativeTime(iso: string): string {
+function formatPercent(value: number | null | undefined): string {
+  if (!isValidNumber(value)) return "--";
+  return `${value}%`;
+}
+
+function formatRelativeTime(iso: string | null | undefined): string {
+  if (!iso) return "--";
   const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "--";
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
+  if (diffMs < 0) return "--";
   const diffMinutes = Math.floor(diffMs / 60_000);
   const diffHours = Math.floor(diffMs / 3_600_000);
   const diffDays = Math.floor(diffMs / 86_400_000);
@@ -88,6 +110,8 @@ export default function DashboardClient() {
   const [status, setStatus] = useState<string>("loading");
   const [deals, setDeals] = useState<Deal[]>([]);
   const [dealsLoading, setDealsLoading] = useState(true);
+  const [stats, setStats] = useState<PipelineStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -125,11 +149,12 @@ export default function DashboardClient() {
 
   const loadJobsAndDeals = useCallback(async () => {
     try {
-      const [healthRes, configRes, dealsRes] = await Promise.all(
+      const [healthRes, configRes, dealsRes, statsRes] = await Promise.all(
         [
           fetch(`${apiPath("/")}health`).then((r) => (r.ok ? r.json() : Promise.reject(new Error("health failed")))),
           fetch(`${apiPath("/")}config`).then((r) => (r.ok ? r.json() : Promise.reject(new Error("config failed")))),
           fetch(`${apiPath("/")}deals`).then((r) => (r.ok ? r.json() : Promise.reject(new Error("deals failed")))),
+          fetch(`${apiPath("/")}stats`).then((r) => (r.ok ? r.json() : Promise.reject(new Error("stats failed")))),
         ].map((p) => p.catch((err) => ({ error: String(err) })))
       );
 
@@ -142,11 +167,15 @@ export default function DashboardClient() {
         setJobs(((configRes as Config).jobs ?? []) as ConfigJob[]);
         setDeals((dealsRes as { deals?: Deal[] }).deals ?? []);
       }
+      if (!("error" in statsRes)) {
+        setStats(statsRes as PipelineStats);
+      }
     } catch {
       setStatus("offline");
     } finally {
       setDealsLoading(false);
       setJobsLoading(false);
+      setStatsLoading(false);
     }
   }, []);
 
@@ -168,11 +197,11 @@ export default function DashboardClient() {
   }, [deals, dealFilter]);
 
   const analytics = useMemo(() => {
-    const totalSpent = deals.reduce((sum, d) => sum + d.price, 0);
-    const totalRevenue = deals.reduce((sum, d) => sum + d.estimated_resell_value, 0);
-    const totalFees = deals.reduce((sum, d) => sum + d.fees, 0);
-    const totalShipping = deals.reduce((sum, d) => sum + d.shipping, 0);
-    const netProfit = deals.reduce((sum, d) => sum + d.net_profit, 0);
+    const totalSpent = deals.reduce((sum, d) => sum + (isValidNumber(d.price) ? d.price : 0), 0);
+    const totalRevenue = deals.reduce((sum, d) => sum + (isValidNumber(d.estimated_resell_value) ? d.estimated_resell_value : 0), 0);
+    const totalFees = deals.reduce((sum, d) => sum + (isValidNumber(d.fees) ? d.fees : 0), 0);
+    const totalShipping = deals.reduce((sum, d) => sum + (isValidNumber(d.shipping) ? d.shipping : 0), 0);
+    const netProfit = deals.reduce((sum, d) => sum + (isValidNumber(d.net_profit) ? d.net_profit : 0), 0);
     return { totalSpent, totalRevenue, totalFees, totalShipping, netProfit };
   }, [deals]);
 
@@ -441,6 +470,31 @@ export default function DashboardClient() {
                 ))}
               </div>
             )}
+
+            <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <h3 className="mb-3 text-sm font-medium">System-Status &amp; Filter-Statistiken</h3>
+              {statsLoading ? (
+                <p className="text-sm text-zinc-500">Lade Statistiken...</p>
+              ) : stats ? (
+                <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
+                  {[
+                    { label: "Gescannte Artikel", value: stats.scanned },
+                    { label: "Spam (Stufe 1)", value: stats.spamFiltered },
+                    { label: "eBay-Check (Stufe 2)", value: stats.ebayChecked },
+                    { label: "Profit-Filter (Stufe 3)", value: stats.profitFiltered },
+                    { label: "Bildanalysen (Stufe 4)", value: stats.imageAnalyses },
+                    { label: "Gesendete Alarme", value: stats.alarms },
+                  ].map((s) => (
+                    <div key={s.label} className="rounded-md border border-zinc-100 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-800/50">
+                      <p className="text-xs text-zinc-500">{s.label}</p>
+                      <p className="mt-1 text-lg font-semibold">{Number.isFinite(s.value) ? s.value : 0}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-zinc-500">Statistiken nicht verfügbar.</p>
+              )}
+            </div>
           </section>
         )}
 
@@ -540,7 +594,7 @@ export default function DashboardClient() {
                         </h3>
                         <div className="mt-2 text-xs text-zinc-500">
                           <p>Kauf: {formatCurrency(deal.price)} • Schätzwert: {formatCurrency(deal.estimated_resell_value)}</p>
-                          <p>ROI: {deal.roi_percent}% • {deal.condition ? `Zustand: ${deal.condition} • ` : ""}{deal.seller ? `Verkäufer: ${deal.seller} • ` : ""}{formatRelativeTime(deal.created_at)}</p>
+                          <p>ROI: {formatPercent(deal.roi_percent)} • {deal.condition ? `Zustand: ${deal.condition} • ` : ""}{deal.seller ? `Verkäufer: ${deal.seller} • ` : ""}{formatRelativeTime(deal.created_at)}</p>
                         </div>
                         <div className="mt-3 flex items-center gap-2">
                           <button
@@ -675,7 +729,7 @@ export default function DashboardClient() {
               </div>
             </div>
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              Zahlen basieren auf {deals.length} gespeicherten Deals aus der Datenbank.
+              Zahlen basieren auf {deals.length} geladenen Deal{deals.length !== 1 ? "s" : ""} aus der API.
             </p>
           </section>
         )}

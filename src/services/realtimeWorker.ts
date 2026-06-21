@@ -4,6 +4,8 @@ import { insertDeal, getFullConfig } from './database.js';
 import { sendDealNotification } from './notificationGateway.js';
 import { randomDelay } from '../utils/delay.js';
 import { log } from '../utils/logger.js';
+import { incrementScanned, incrementSpamFiltered, incrementAlarm, getStats, resetStats } from './stats.js';
+import type { PipelineStats } from './stats.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AppConfig, ScrapedItem, SearchJob, VerifiedDeal } from '../types/index.js';
 
@@ -30,6 +32,10 @@ export function isRealtimeWorkerRunning(): boolean {
   return isRunning;
 }
 
+export function getWorkerStats(): PipelineStats {
+  return getStats();
+}
+
 function isSpamTagged(item: ScrapedItem): boolean {
   const title = item.title.toLowerCase();
   const found = new Set<string>();
@@ -40,6 +46,7 @@ function isSpamTagged(item: ScrapedItem): boolean {
   }
   const isSpam = found.size > 1;
   if (isSpam) {
+    incrementSpamFiltered();
     log('info', 'Spam filter blocked item', { itemId: item.id, title: item.title, brands: Array.from(found) });
   }
   return isSpam;
@@ -79,6 +86,7 @@ async function handleNewItem(
   const deal = await verifyDeal(item, config);
   if (!deal) return;
 
+  incrementAlarm();
   sendDealNotification(deal).catch((err) => {
     log('error', 'Realtime notification failed', { dealId: deal.id, error: String(err) });
   });
@@ -116,6 +124,9 @@ export async function runRealtimeWorker(client: SupabaseClient): Promise<void> {
           if (!job.enabled || job.keywords.length === 0) continue;
 
           const items = await searchVinted(job.keywords, job.maxPrice, config.antiBot);
+          for (const _ of items) {
+            incrementScanned();
+          }
           const newItems = getNewItems(items, seenIds);
 
           log('info', 'Vinted realtime scan', {

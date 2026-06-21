@@ -19,7 +19,8 @@ import {
   generateSEOText,
   loadGeminiApiKeyFromConfig,
 } from './services/geminiService.js';
-import { startRealtimeWorker } from './services/realtimeWorker.js';
+import { startRealtimeWorker, getWorkerStats } from './services/realtimeWorker.js';
+import type { VerifiedDeal } from './types/index.js';
 
 const geminiApiKey = process.env.GEMINI_API_KEY || loadGeminiApiKeyFromConfig();
 if (geminiApiKey && !process.env.GEMINI_API_KEY) {
@@ -171,6 +172,36 @@ app.delete('/jobs/:id', async (req, res) => {
   }
 });
 
+function mapDealToApi(deal: VerifiedDeal) {
+  return {
+    id: deal.id,
+    platform: deal.platform,
+    title: deal.title,
+    price: deal.price,
+    currency: deal.currency,
+    estimated_resell_value: deal.estimatedResellValue,
+    fees: deal.fees,
+    shipping: deal.shipping,
+    net_profit: deal.netProfit,
+    roi_percent: deal.roiPercent,
+    url: deal.url,
+    image_url: deal.imageUrl,
+    condition: deal.condition,
+    seller: deal.seller,
+    created_at: deal.createdAt,
+    optimized_description: deal.optimizedDescription
+      ? {
+          title: deal.optimizedDescription.title,
+          description: deal.optimizedDescription.description,
+          hashtags: deal.optimizedDescription.hashtags,
+          condition: deal.optimizedDescription.condition,
+          tone: deal.optimizedDescription.tone,
+          optimized_at: deal.optimizedDescription.optimizedAt,
+        }
+      : undefined,
+  };
+}
+
 app.get('/deals', async (_req, res) => {
   const client = getGlobalClient();
   if (!client) {
@@ -179,10 +210,19 @@ app.get('/deals', async (_req, res) => {
   }
   try {
     const deals = await getDeals(client, 100);
-    res.json({ deals, count: deals.length });
+    res.json({ deals: deals.map(mapDealToApi), count: deals.length });
   } catch (err) {
     log('error', 'Failed to load deals', { error: String(err) });
     res.status(500).json({ error: 'Failed to load deals' });
+  }
+});
+
+app.get('/stats', async (_req, res) => {
+  try {
+    res.json(getWorkerStats());
+  } catch (err) {
+    log('error', 'Failed to load stats', { error: String(err) });
+    res.status(500).json({ error: 'Failed to load stats' });
   }
 });
 

@@ -1,12 +1,14 @@
 import { log } from '../utils/logger.js';
 import { lookupSoldPrice } from './ebayValueLookup.js';
 import { analyzeProductImage } from './geminiService.js';
+import { incrementEbayChecked, incrementProfitFiltered, incrementImageAnalysis } from './stats.js';
 import type { AppConfig, ScrapedItem, VerifiedDeal } from '../types/index.js';
 
 const MIN_NET_PROFIT = 15;
 const IMAGE_ANALYSIS_PROFIT_GATE = 25;
 
 export async function estimateResellValue(item: ScrapedItem, config: AppConfig): Promise<number | null> {
+  incrementEbayChecked();
   const ebay = await lookupSoldPrice(item, config.antiBot);
   if (ebay && ebay.count >= 3) {
     log('info', 'eBay sold price lookup used', {
@@ -46,6 +48,7 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
   const netProfitBeforeImage = Math.round((estimatedResellValue - item.price - fees - shipping) * 100) / 100;
 
   if (netProfitBeforeImage < IMAGE_ANALYSIS_PROFIT_GATE) {
+    incrementProfitFiltered();
     log('info', 'Deal verworfen in Stufe 3: Profit zu gering. Keine Bildanalyse gestartet.', {
       itemId: item.id,
       netProfitBeforeImage,
@@ -56,6 +59,7 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
 
   // Stufe 4: Nur fuer absolute Top-Profit-Deals (> 25 Euro) Bildanalyse via Gemini (teuer).
   if (item.imageUrl) {
+    incrementImageAnalysis();
     const analysis = await analyzeProductImage(item.imageUrl);
     if (analysis.success && analysis.result) {
       const { isDamaged, flaws, confidence } = analysis.result;
@@ -90,6 +94,7 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
   );
 
   if (netProfit < minDesiredProfit) {
+    incrementProfitFiltered();
     log('info', 'Deal below profit threshold', {
       itemId: item.id,
       netProfit,
