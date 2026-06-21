@@ -121,6 +121,16 @@ export async function getDeals(client: SupabaseClient, limit = 50): Promise<Veri
     condition: row.condition ?? undefined,
     seller: row.seller ?? undefined,
     createdAt: row.created_at,
+    optimizedDescription: row.optimized_title
+      ? {
+          title: row.optimized_title,
+          description: row.optimized_description ?? '',
+          hashtags: row.optimized_hashtags ?? [],
+          condition: row.optimized_condition ?? '',
+          tone: row.optimized_tone ?? '',
+          optimizedAt: row.optimized_at ?? undefined,
+        }
+      : undefined,
   }));
 }
 
@@ -173,5 +183,15 @@ export async function getDealById(client: SupabaseClient, id: string): Promise<V
     condition: data.condition ?? undefined,
     seller: data.seller ?? undefined,
     createdAt: data.created_at,
+    optimizedDescription: data.optimized_title
+      ? {
+          title: data.optimized_title,
+          description: data.optimized_description ?? '',
+          hashtags: data.optimized_hashtags ?? [],
+          condition: data.optimized_condition ?? '',
+          tone: data.optimized_tone ?? '',
+          optimizedAt: data.optimized_at ?? undefined,
+        }
+      : undefined,
   };
 }

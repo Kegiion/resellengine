@@ -86,4 +86,5 @@ export interface VerifiedDeal {
   condition?: string;
   seller?: string;
   createdAt: string;
+  optimizedDescription?: OptimizedDescription & { optimizedAt?: string };
 }
