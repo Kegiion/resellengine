@@ -143,30 +143,32 @@ async function scrapeVintedHtml(
       const seen = new Set<number>();
 
       const itemCards = document.querySelectorAll(
-        '[data-testid="catalog-item"], .feed-grid__item, .u-position-relative'
+        '[data-testid="grid-item"]'
       );
 
       for (const card of Array.from(itemCards)) {
-        const link = card.querySelector('a[href^="/items/"]') as HTMLAnchorElement | null;
-        if (!link) continue;
+        const itemWrapper = card.querySelector('[data-testid^="product-item-id-"]');
+        if (!itemWrapper) continue;
 
-        const href = link.getAttribute('href') || '';
-        const idMatch = href.match(/\/items\/(\d+)-/);
+        const idMatch = itemWrapper.getAttribute('data-testid')?.match(/product-item-id-(\d+)/);
         if (!idMatch) continue;
         const id = Number(idMatch[1]);
         if (seen.has(id)) continue;
         seen.add(id);
 
+        const link = card.querySelector('a[href^="/items/"]') as HTMLAnchorElement | null;
         const titleEl =
-          card.querySelector('[data-testid="product-title"]') ||
-          card.querySelector('h2') ||
+          card.querySelector('[data-testid$="--description-title"]') ||
+          card.querySelector('[data-testid$="--description"]') ||
           link;
         const title = (titleEl?.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 120);
 
-        const priceEl = card.querySelector('[data-testid="price"], .price, span');
+        const priceEl =
+          card.querySelector('[data-testid$="--price-text"]') ||
+          card.querySelector('[data-testid="total-combined-price"]');
         const priceText = (priceEl?.textContent || '').trim();
 
-        const imgEl = card.querySelector('img') as HTMLImageElement | null;
+        const imgEl = card.querySelector('[data-testid$="--image--img"]') as HTMLImageElement | null;
         const imageUrl = imgEl?.src || imgEl?.dataset?.src || undefined;
 
         if (title && priceText) {
