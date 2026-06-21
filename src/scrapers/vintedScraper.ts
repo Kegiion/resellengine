@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { chromium } from 'playwright';
 import { randomDelay, humanizedDelay } from '../utils/delay.js';
 import { log } from '../utils/logger.js';
 import { getRandomUserAgent } from '../utils/userAgents.js';
@@ -10,13 +11,14 @@ const API_BASE = 'https://www.vinted.de/api/v2';
 interface VintedApiItem {
   id: number;
   title: string;
-  price: number;
-  currency: string;
-  url: string;
+  price: {
+    amount: string;
+    currency_code: string;
+  };
+  path: string;
   thumbnail?: string;
   brand_title?: string;
   size_title?: string;
-  status?: string;
   is_visible?: boolean;
 }
 
@@ -25,47 +27,36 @@ function buildCatalogApiUrl(keywords: string[], maxPrice: number, page = 1): str
   return `${API_BASE}/catalog/items?search_text=${searchText}&price_to=${maxPrice}&order=newest_first&page=${page}&per_page=20`;
 }
 
+function buildSearchPageUrl(keywords: string[], maxPrice: number): string {
+  const searchText = encodeURIComponent(keywords.join(' '));
+  return `${BASE_URL}/catalog?search_text=${searchText}&price_to=${maxPrice}&order=newest_first`;
+}
+
+function buildItemUrl(id: number, title: string): string {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .slice(0, 60);
+  return `${BASE_URL}/items/${id}-${slug}`;
+}
+
 function mapApiItem(item: VintedApiItem): ScrapedItem {
+  const price = Number(item.price?.amount) || 0;
+  const currency = item.price?.currency_code || 'EUR';
+  const path = item.path || '';
   return {
     id: `vinted-${item.id}`,
     platform: 'vinted',
     title: item.title || item.brand_title || 'Unbekannt',
-    price: item.price,
-    currency: item.currency || 'EUR',
-    url: item.url.startsWith('http') ? item.url : `${BASE_URL}${item.url}`,
+    price,
+    currency,
+    url: path.startsWith('http') ? path : `${BASE_URL}${path}`,
     imageUrl: item.thumbnail,
     brand: item.brand_title,
     size: item.size_title,
     scrapedAt: new Date().toISOString(),
   };
-}
-
-function generateMockItems(keywords: string[], maxPrice: number): ScrapedItem[] {
-  const brands = ['Nike', 'Adidas', 'Puma', 'New Balance', 'Asics'];
-  const sizes = ['42', '42.5', '43', '44', '44.5', '45'];
-  const conditions = ['Sehr gut', 'Gut', 'Neu mit Etikett'];
-  const now = new Date().toISOString();
-
-  const items: ScrapedItem[] = [];
-  for (let i = 0; i < 8; i++) {
-    const price = Math.floor(Math.random() * (maxPrice - 20) + 20);
-    const brand = brands[i % brands.length];
-    const title = `${brand} ${keywords.join(' ')} ${String.fromCharCode(65 + i)}`;
-    items.push({
-      id: `vinted-mock-${Date.now()}-${i}`,
-      platform: 'vinted',
-      title: title.slice(0, 120),
-      price,
-      currency: 'EUR',
-      url: `${BASE_URL}/items/${1000000000 + i}-${title.toLowerCase().replace(/\s+/g, '-')}`,
-      imageUrl: `https://via.placeholder.com/300x400?text=${encodeURIComponent(title.slice(0, 20))}`,
-      brand,
-      size: sizes[i % sizes.length],
-      condition: conditions[i % conditions.length],
-      scrapedAt: now,
-    });
-  }
-  return items;
 }
 
 async function fetchVintedApi(
@@ -92,11 +83,100 @@ async function fetchVintedApi(
 
     const response = await axios.get(url, { headers, timeout: 20000 });
 
-    const items = response.data?.items?.map((entry: { item: VintedApiItem }) => entry.item) || [];
+    const items = response.data?.items || [];
     return items.filter((item: VintedApiItem) => item.is_visible !== false);
   } catch (error) {
-    log('warn', 'Vinted API fetch failed; falling back to mock data', { error: String(error) });
+    log('warn', 'Vinted API fetch failed', { error: String(error) });
     return [];
+  }
+}
+
+async function scrapeVintedHtml(
+  keywords: string[],
+  maxPrice: number
+): Promise<ScrapedItem[]> {
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      userAgent: getRandomUserAgent(),
+      viewport: { width: 1440, height: 900 },
+      locale: 'de-DE',
+    });
+    const page = await context.newPage();
+
+    const url = buildSearchPageUrl(keywords, maxPrice);
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForTimeout(3000 + Math.random() * 2000);
+
+    const items = await page.evaluate(() => {
+      const results: Array<{
+        id: number;
+        title: string;
+        priceText: string;
+        imageUrl?: string;
+      }> = [];
+      const seen = new Set<number>();
+
+      const itemCards = document.querySelectorAll(
+        '[data-testid="catalog-item"], .feed-grid__item, .u-position-relative'
+      );
+
+      for (const card of Array.from(itemCards)) {
+        const link = card.querySelector('a[href^="/items/"]') as HTMLAnchorElement | null;
+        if (!link) continue;
+
+        const href = link.getAttribute('href') || '';
+        const idMatch = href.match(/\/items\/(\d+)-/);
+        if (!idMatch) continue;
+        const id = Number(idMatch[1]);
+        if (seen.has(id)) continue;
+        seen.add(id);
+
+        const titleEl =
+          card.querySelector('[data-testid="product-title"]') ||
+          card.querySelector('h2') ||
+          link;
+        const title = (titleEl?.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 120);
+
+        const priceEl = card.querySelector('[data-testid="price"], .price, span');
+        const priceText = (priceEl?.textContent || '').trim();
+
+        const imgEl = card.querySelector('img') as HTMLImageElement | null;
+        const imageUrl = imgEl?.src || imgEl?.dataset?.src || undefined;
+
+        if (title && priceText) {
+          results.push({ id, title, priceText, imageUrl });
+        }
+      }
+
+      return results.slice(0, 20);
+    });
+
+    if (items.length === 0) {
+      log('warn', 'Vinted HTML scrape returned no items');
+      return [];
+    }
+
+    return items.map((item) => {
+      const normalized = item.priceText.replace(/\./g, '').replace(/,/g, '.');
+      const price = Number((normalized.match(/\d+(?:\.\d+)?/) || ['0'])[0]);
+      return {
+        id: `vinted-${item.id}`,
+        platform: 'vinted' as const,
+        title: item.title,
+        price,
+        currency: 'EUR',
+        url: buildItemUrl(item.id, item.title),
+        imageUrl: item.imageUrl,
+        scrapedAt: new Date().toISOString(),
+      };
+    });
+  } catch (error) {
+    log('warn', 'Vinted HTML scrape failed', { error: String(error) });
+    return [];
+  } finally {
+    await browser?.close().catch(() => undefined);
   }
 }
 
@@ -112,11 +192,21 @@ export async function searchVinted(
   const apiItems = await fetchVintedApi(keywords, maxPrice, antiBot, cookie);
   await humanizedDelay(1500);
 
-  const items =
-    apiItems.length > 0
-      ? apiItems.filter((item) => item.price <= maxPrice).map(mapApiItem).slice(0, 20)
-      : generateMockItems(keywords, maxPrice);
+  let items: ScrapedItem[] = [];
+  if (apiItems.length > 0) {
+    items = apiItems.filter((item) => Number(item.price.amount) <= maxPrice).map(mapApiItem).slice(0, 5);
+    log('info', `Vinted search complete via API`, { count: items.length });
+    return items;
+  }
 
-  log('info', `Vinted search complete`, { count: items.length, source: apiItems.length > 0 ? 'api' : 'mock' });
-  return items;
+  log('info', 'Vinted API returned no items; attempting HTML scrape');
+  items = await scrapeVintedHtml(keywords, maxPrice);
+
+  if (items.length === 0) {
+    log('warn', 'Vinted search returned no real items; waiting for next cycle', { keywords });
+    return [];
+  }
+
+  log('info', `Vinted search complete via HTML`, { count: items.length });
+  return items.filter((item) => item.price <= maxPrice).slice(0, 20);
 }

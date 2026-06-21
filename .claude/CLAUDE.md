@@ -96,6 +96,8 @@ All sensitive config and runtime variables live in `.env` (see `.env.example`):
 - **Deals**: inserted with `ON CONFLICT` / `upsert` semantics so re-running scrapers updates existing deals without duplicates.
 - **Text optimization**: `POST /api/deals/:id/optimize-text` uses Claude to generate SEO text and stores it in the `deals` table (`optimized_*` columns).
 - **Image generation**: `POST /generate-image` returns a base64 data URL.
+- **Job creation**: `POST /jobs` creates or updates a search job in Supabase. Body fields: `id`, `platform`, `keywords` (array or comma/space string), `maxPrice`, `minDesiredProfit`, `condition`, `enabled`.
+- **Image damage analysis**: `verifyDeal()` in `src/services/valueChecker.ts` calls `analyzeProductImage()` from `src/services/geminiService.ts` before sending a deal. If damage is detected, the estimated resell value is reduced by 70% (factor 0.3), usually blocking the 15€ profit threshold and the Discord alert.
 
 ## Next.js Frontend Notes
 

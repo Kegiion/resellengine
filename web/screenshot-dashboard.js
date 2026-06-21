@@ -1,0 +1,22 @@
+const { chromium, devices } = require('@playwright/test');
+const fs = require('fs');
+const path = require('path');
+(async () => {
+  const browser = await chromium.launch();
+  const outDir = 'C:/Users/firea/Desktop/Coding/Resell/web/screenshots';
+  fs.mkdirSync(outDir, { recursive: true });
+  const desktop = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  await desktop.goto('https://akaidon.market/?nocache=1', { waitUntil: 'networkidle' });
+  await desktop.waitForTimeout(3000);
+  await desktop.screenshot({ path: path.join(outDir, 'desktop.png'), fullPage: true });
+  const desktopStatus = await desktop.locator('text=/API|offline|online/i').first().textContent().catch(() => 'no-status');
+  await desktop.close();
+  const mobile = await browser.newPage({ ...devices['iPhone SE'] });
+  await mobile.goto('https://akaidon.market/?nocache=1', { waitUntil: 'networkidle' });
+  await mobile.waitForTimeout(3000);
+  await mobile.screenshot({ path: path.join(outDir, 'mobile.png'), fullPage: true });
+  const mobileStatus = await mobile.locator('text=/API|offline|online/i').first().textContent().catch(() => 'no-status');
+  await mobile.close();
+  await browser.close();
+  console.log(JSON.stringify({ desktopStatus, mobileStatus }, null, 2));
+})();

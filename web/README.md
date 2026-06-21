@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ResellEngine Web Dashboard
 
-## Getting Started
+Next.js 16 App Router Dashboard für ResellEngine.
 
-First, run the development server:
+## Environment
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Im Vercel-Dashboard oder in einer `.env.local` beim lokalen Start:
+
+```env
+NEXT_PUBLIC_API_URL=http://91.99.132.249:3002
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Lokal gegen das Backend:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```env
+NEXT_PUBLIC_API_URL=http://localhost:3002
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Development
 
-## Learn More
+```bash
+cd web
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Build
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+npm run build
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Output ist `standalone` unter `.next/standalone/`.
 
-## Deploy on Vercel
+## Deployment
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### Vercel (empfohlen)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Repo auf GitHub pushen.
+2. In Vercel "Import Project" → Root-Directory `web` auswählen.
+3. Environment Variable `NEXT_PUBLIC_API_URL` auf `http://91.99.132.249:3002` setzen.
+4. Deploy.
+
+### VM / Eigenes Hosting
+
+```bash
+cd web
+npm install
+npm run build
+node .next/standalone/server.js
+```
+
+Auf der VM kann das Backend unter Port `3002` und das Frontend unter Port `3000` laufen. Stelle sicher, dass `NEXT_PUBLIC_API_URL` auf die externe VM-IP zeigt.

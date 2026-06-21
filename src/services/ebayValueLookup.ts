@@ -1,68 +1,141 @@
 import axios from 'axios';
+import * as cheerio from 'cheerio';
 import { log } from '../utils/logger.js';
-import { getRandomUserAgent } from '../utils/userAgents.js';
 import type { AntiBotConfig, ScrapedItem } from '../types/index.js';
 
 const EBAY_DE_URL = 'https://www.ebay.de/sch/i.html';
+const DECODO_API_URL = 'https://scraper-api.decodo.com/v2/scrape';
+const MAX_QUERY_LEN = 80;
 
 function buildEbaySoldUrl(query: string): string {
-  const encoded = encodeURIComponent(query);
-  return `${EBAY_DE_URL}?_nkw=${encoded}&_sacat=0&LH_Complete=1&LH_Sold=1&rt=nc&_ipg=120`;
+  const cleaned = query
+    .replace(/[^\w\säöüÄÖÜß\-]/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_QUERY_LEN);
+  const encoded = encodeURIComponent(cleaned);
+  return `${EBAY_DE_URL}?_nkw=${encoded}&_sacat=0&LH_Complete=1&LH_Sold=1&rt=nc&_ipg=60&_dmd=2`;
 }
 
 function extractSoldPrices(html: string): number[] {
+  const $ = cheerio.load(html);
   const prices: number[] = [];
-  const regex = /<span class="s-item__price">([\s\S]*?)<\/span>/g;
-  let match: RegExpExecArray | null;
+  const seen = new Set<string>();
 
-  while ((match = regex.exec(html)) !== null) {
-    const text = match[1].replace(/<[^>]+>/g, '').trim();
-    const normalized = text.replace(/\./g, '').replace(/,/g, '.').replace(/[^\d.]/g, '');
-    const price = Number(normalized);
-    if (price > 0 && price < 5000) {
+  const addPrice = (text: string) => {
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+
+    let normalized = text.replace(/\./g, '').replace(/,/g, '.');
+    normalized = normalized.replace(/[^\d.]/g, '');
+    const parts = normalized.split('.').filter((p) => p);
+    let price = 0;
+    if (parts.length >= 2) {
+      const decimal = parts.pop() ?? '00';
+      const integer = parts.join('');
+      price = Number(`${integer}.${decimal}`);
+    } else if (parts.length === 1) {
+      price = Number(parts[0]);
+    }
+
+    if (price > 0.5 && price < 5000) {
       prices.push(price);
     }
+  };
+
+  const text = $.text();
+  const regex = /\b\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s*[€]|\s*€\s*\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|EUR\s*\d{1,3}(?:[.,]\d{3})*[.,]\d{2}/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    addPrice(match[0]);
   }
 
   return prices;
 }
 
+function filterOutliers(prices: number[]): number[] {
+  if (prices.length < 4) return prices;
+
+  const sorted = [...prices].sort((a, b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const q3 = sorted[Math.ceil(sorted.length * 0.75)];
+  const iqr = q3 - q1;
+  const lower = q1 - 1.5 * iqr;
+  const upper = q3 + 1.5 * iqr;
+
+  return prices.filter((p) => p >= lower && p <= upper);
+}
+
+function average(prices: number[]): number {
+  if (prices.length === 0) return 0;
+  return prices.reduce((a, b) => a + b, 0) / prices.length;
+}
+
 export async function lookupSoldPrice(
   item: ScrapedItem,
-  antiBot: AntiBotConfig
-): Promise<{ average: number; median: number; count: number } | null> {
-  const query = `${item.brand ?? ''} ${item.title}`.trim().slice(0, 100);
+  _antiBot: AntiBotConfig
+): Promise<{ average: number; count: number } | null> {
+  const username = process.env.DECODO_API_USERNAME;
+  const password = process.env.DECODO_API_PASSWORD;
+  if (!username || !password) {
+    log('warn', 'DECODO_API_USERNAME or DECODO_API_PASSWORD not set; skipping eBay sold lookup', { itemId: item.id });
+    return null;
+  }
+
+  const brand = item.brand ? `${item.brand} ` : '';
+  const title = item.title || '';
+  const query = `${brand}${title}`.trim();
   const url = buildEbaySoldUrl(query);
-  const userAgent = antiBot.rotateUserAgents ? getRandomUserAgent() : undefined;
+  const auth = Buffer.from(`${username}:${password}`).toString('base64');
 
   try {
-    const response = await axios.get(url, {
-      headers: {
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
-        'User-Agent': userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-      timeout: 20000,
-    });
+    await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 1200));
 
-    const prices = extractSoldPrices(response.data);
-    if (prices.length === 0) {
+    const response = await axios.post(
+      DECODO_API_URL,
+      {
+        url,
+        proxy_pool: 'premium',
+        headless: 'html',
+      },
+      {
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          Authorization: `Basic ${auth}`,
+        },
+        timeout: 90000,
+      }
+    );
+
+    const html =
+      typeof response.data === 'string'
+        ? response.data
+        : response.data?.result?.content || response.data?.content || response.data?.html || JSON.stringify(response.data);
+
+    const allPrices = extractSoldPrices(html);
+    if (allPrices.length === 0) {
+      log('warn', 'Decodo scrape returned no eBay prices', { itemId: item.id, query });
       return null;
     }
 
-    prices.sort((a, b) => a - b);
-    const average = prices.reduce((a, b) => a + b, 0) / prices.length;
-    const median = prices.length % 2 === 0
-      ? (prices[prices.length / 2 - 1] + prices[prices.length / 2]) / 2
-      : prices[Math.floor(prices.length / 2)];
+    const filtered = filterOutliers(allPrices).slice(0, 10);
+    if (filtered.length === 0) {
+      return null;
+    }
 
-    return {
-      average: Math.round(average * 100) / 100,
-      median: Math.round(median * 100) / 100,
-      count: prices.length,
-    };
+    const avg = Math.round(average(filtered) * 100) / 100;
+    log('info', 'eBay sold lookup completed via Decodo', {
+      itemId: item.id,
+      query,
+      rawCount: allPrices.length,
+      usedCount: filtered.length,
+      average: avg,
+    });
+
+    return { average: avg, count: filtered.length };
   } catch (error) {
-    log('warn', 'eBay sold price lookup failed', { itemId: item.id, error: String(error) });
+    log('warn', 'Decodo eBay sold lookup failed', { itemId: item.id, query, error: String(error) });
     return null;
   }
 }

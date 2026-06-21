@@ -1,6 +1,11 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
 import {
   initDatabase,
   getDeals,
@@ -14,7 +19,7 @@ import {
   generateSEOText,
   loadGeminiApiKeyFromConfig,
 } from './services/geminiService.js';
-import { startScheduler } from './services/scheduler.js';
+import { startRealtimeWorker } from './services/realtimeWorker.js';
 
 const geminiApiKey = process.env.GEMINI_API_KEY || loadGeminiApiKeyFromConfig();
 if (geminiApiKey && !process.env.GEMINI_API_KEY) {
@@ -24,7 +29,30 @@ if (geminiApiKey && !process.env.GEMINI_API_KEY) {
 const app = express();
 const port = process.env.PORT ? Number(process.env.PORT) : 3000;
 
-app.use(cors());
+const corsOrigin = (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+  if (!origin) return callback(null, true);
+
+  const defaultPatterns = [
+    /^https:\/\/resellengine.*\.vercel\.app$/,
+    /^https:\/\/.*-nevrion-s-projects\.vercel\.app$/,
+    /^http:\/\/localhost(:\d+)?$/,
+    /^https:\/\/localhost(:\d+)?$/,
+  ];
+
+  const allPatterns = [
+    ...defaultPatterns,
+    ...allowedOrigins.map((o) => new RegExp(o.replace(/\./g, '\\.').replace(/\*/g, '.*'))),
+  ];
+
+  if (allPatterns.some((rx) => rx.test(origin))) {
+    return callback(null, true);
+  }
+
+  log('warn', 'CORS blocked origin', { origin });
+  callback(new Error('Not allowed by CORS'));
+};
+
+app.use(cors({ origin: corsOrigin, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/health', (_req, res) => {
@@ -48,6 +76,98 @@ app.get('/config', async (_req, res) => {
   } catch (err) {
     log('error', 'Failed to load config', { error: String(err) });
     res.status(500).json({ error: 'Failed to load config' });
+  }
+});
+
+app.post('/jobs', async (req, res) => {
+  const client = getGlobalClient();
+  if (!client) {
+    res.status(503).json({ error: 'Database not initialized' });
+    return;
+  }
+
+  const body = req.body as Partial<{
+    id: string;
+    platform: string;
+    keywords: string | string[];
+    maxPrice: number;
+    minDesiredProfit: number;
+    condition: string;
+    enabled: boolean;
+  }>;
+
+  const id = (body.id ?? '').trim();
+  const platform = (body.platform ?? 'vinted').trim() as 'vinted' | 'kleinanzeigen';
+  const keywordsRaw = body.keywords;
+  const keywords = Array.isArray(keywordsRaw)
+    ? keywordsRaw.map((k) => String(k).trim()).filter(Boolean)
+    : String(keywordsRaw ?? '')
+        .split(/[,\s]+/)
+        .map((k) => k.trim())
+        .filter(Boolean);
+  const maxPrice = Number(body.maxPrice);
+  const minDesiredProfit = Number(body.minDesiredProfit ?? 15);
+  const condition = (body.condition ?? '').trim() || undefined;
+  const enabled = body.enabled !== false;
+
+  if (!id || id.length > 120) {
+    res.status(400).json({ error: 'Job ID is required and must be <= 120 characters' });
+    return;
+  }
+  if (!['vinted', 'kleinanzeigen'].includes(platform)) {
+    res.status(400).json({ error: 'platform must be vinted or kleinanzeigen' });
+    return;
+  }
+  if (keywords.length === 0 || keywords.length > 10) {
+    res.status(400).json({ error: 'Between 1 and 10 keywords are required' });
+    return;
+  }
+  if (!Number.isFinite(maxPrice) || maxPrice <= 0) {
+    res.status(400).json({ error: 'maxPrice must be a positive number' });
+    return;
+  }
+  if (!Number.isFinite(minDesiredProfit)) {
+    res.status(400).json({ error: 'minDesiredProfit must be a number' });
+    return;
+  }
+
+  try {
+    const { data, error } = await client
+      .from('jobs')
+      .upsert({
+        id,
+        platform,
+        keywords,
+        max_price: maxPrice,
+        min_desired_profit: minDesiredProfit,
+        condition,
+        enabled,
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json(data);
+  } catch (err) {
+    log('error', 'Failed to create job', { error: String(err) });
+    res.status(500).json({ error: 'Failed to create job' });
+  }
+});
+
+app.delete('/jobs/:id', async (req, res) => {
+  const client = getGlobalClient();
+  if (!client) {
+    res.status(503).json({ error: 'Database not initialized' });
+    return;
+  }
+  const { id } = req.params;
+  try {
+    const { error } = await client.from('jobs').delete().eq('id', id);
+    if (error) throw error;
+    res.status(204).send();
+  } catch (err) {
+    log('error', 'Failed to delete job', { id, error: String(err) });
+    res.status(500).json({ error: 'Failed to delete job' });
   }
 });
 
@@ -120,7 +240,7 @@ async function main() {
     log('info', `ResellEngine API listening on http://0.0.0.0:${port}`);
   });
 
-  startScheduler(client, { intervalMs: 180_000 });
+  startRealtimeWorker(client);
 }
 
 main().catch((error) => {

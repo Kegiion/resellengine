@@ -1,37 +1,24 @@
 import { log } from '../utils/logger.js';
 import { lookupSoldPrice } from './ebayValueLookup.js';
-import { estimateWithLlm } from './llmValueLookup.js';
+import { analyzeProductImage } from './geminiService.js';
 import type { AppConfig, ScrapedItem, VerifiedDeal } from '../types/index.js';
 
-function heuristicResellValue(item: ScrapedItem): number {
-  const markup = 1.4 + (Math.random() * 0.4 - 0.2); // 1.2 - 1.6
-  return Math.round(item.price * markup * 100) / 100;
-}
+const MIN_NET_PROFIT = 15;
+const IMAGE_ANALYSIS_PROFIT_GATE = 25;
 
-export async function estimateResellValue(item: ScrapedItem, config: AppConfig): Promise<number> {
-  const llm = await estimateWithLlm(item);
-  if (llm && llm.confidence !== 'low') {
-    log('info', 'LLM estimate used', {
-      itemId: item.id,
-      value: llm.estimatedResellValue,
-      confidence: llm.confidence,
-    });
-    return Math.round(llm.estimatedResellValue * 100) / 100;
-  }
-
-  const sold = await lookupSoldPrice(item, config.antiBot);
-  if (sold && sold.count >= 3) {
+export async function estimateResellValue(item: ScrapedItem, config: AppConfig): Promise<number | null> {
+  const ebay = await lookupSoldPrice(item, config.antiBot);
+  if (ebay && ebay.count >= 3) {
     log('info', 'eBay sold price lookup used', {
       itemId: item.id,
-      median: sold.median,
-      average: sold.average,
-      count: sold.count,
+      average: ebay.average,
+      count: ebay.count,
     });
-    return sold.median;
+    return ebay.average;
   }
 
-  log('info', 'Falling back to heuristic resell value', { itemId: item.id });
-  return heuristicResellValue(item);
+  log('warn', 'No datenbasierte eBay resell value available; rejecting deal', { itemId: item.id });
+  return null;
 }
 
 function calculateFees(item: ScrapedItem, config: AppConfig): number {
@@ -43,22 +30,70 @@ function calculateFees(item: ScrapedItem, config: AppConfig): number {
 }
 
 export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<VerifiedDeal | null> {
-  const estimatedResellValue = await estimateResellValue(item, config);
-  const fees = calculateFees(item, config);
-  const shipping = config.fees.shippingEstimate;
-  const netProfit = Math.round((estimatedResellValue - item.price - fees - shipping) * 100) / 100;
-  const roiPercent = item.price > 0 ? Math.round((netProfit / item.price) * 1000) / 10 : 0;
+  // Stufe 1: Lokale Text- und Spam-Filter sind bereits im Worker (isSpamTagged) gelaufen.
+  // Wir landen hier nur, wenn der Artikel die Text-/Spam-Filter passiert hat.
 
-  if (netProfit < 0) {
+  // Stufe 2: eBay-Lookup (geringe Kosten).
+  let estimatedResellValue = await estimateResellValue(item, config);
+  if (estimatedResellValue === null) {
+    log('info', 'Deal verworfen in Stufe 2: Keine eBay-Daten verfuegbar.', { itemId: item.id });
     return null;
   }
 
-  const job = config.jobs.find((j) => j.platform === item.platform);
-  if (job && netProfit < job.minDesiredProfit) {
+  // Stufe 3: ROI-Berechnung mit harter 25-Euro-Huerde fuer Bildanalyse.
+  const fees = calculateFees(item, config);
+  const shipping = config.fees.shippingEstimate;
+  const netProfitBeforeImage = Math.round((estimatedResellValue - item.price - fees - shipping) * 100) / 100;
+
+  if (netProfitBeforeImage < IMAGE_ANALYSIS_PROFIT_GATE) {
+    log('info', 'Deal verworfen in Stufe 3: Profit zu gering. Keine Bildanalyse gestartet.', {
+      itemId: item.id,
+      netProfitBeforeImage,
+      gate: IMAGE_ANALYSIS_PROFIT_GATE,
+    });
+    return null;
+  }
+
+  // Stufe 4: Nur fuer absolute Top-Profit-Deals (> 25 Euro) Bildanalyse via Gemini (teuer).
+  if (item.imageUrl) {
+    const analysis = await analyzeProductImage(item.imageUrl);
+    if (analysis.success && analysis.result) {
+      const { isDamaged, flaws, confidence } = analysis.result;
+      if (isDamaged) {
+        const reducedValue = Math.round(estimatedResellValue * 0.3 * 100) / 100;
+        log('info', 'Image damage detected; reducing resell value by 70%', {
+          itemId: item.id,
+          originalValue: estimatedResellValue,
+          reducedValue,
+          flaws,
+          confidence,
+        });
+        estimatedResellValue = reducedValue;
+      } else {
+        log('info', 'Image analysis found no visible damage', { itemId: item.id, confidence });
+      }
+    } else {
+      log('warn', 'Image damage analysis failed; continuing with full value', {
+        itemId: item.id,
+        error: analysis.error,
+      });
+    }
+  }
+
+  // Finale Profitpruefung gegen das hinterlegte Job-Minimum (mindestens 15 Euro).
+  const netProfit = Math.round((estimatedResellValue - item.price - fees - shipping) * 100) / 100;
+  const roiPercent = item.price > 0 ? Math.round((netProfit / item.price) * 1000) / 10 : 0;
+
+  const minDesiredProfit = Math.max(
+    config.jobs.find((j) => j.platform === item.platform)?.minDesiredProfit ?? 0,
+    MIN_NET_PROFIT
+  );
+
+  if (netProfit < minDesiredProfit) {
     log('info', 'Deal below profit threshold', {
       itemId: item.id,
       netProfit,
-      threshold: job.minDesiredProfit,
+      threshold: minDesiredProfit,
     });
     return null;
   }
