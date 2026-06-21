@@ -17,6 +17,7 @@ const nextConfig: NextConfig = {
       { source: "/api/jobs", destination: `${API_BASE}/jobs` },
       { source: "/api/generate-image", destination: `${API_BASE}/generate-image` },
       { source: "/api/api/deals/:id/optimize-text", destination: `${API_BASE}/api/deals/:id/optimize-text` },
+      { source: "/api/system/health", destination: `${API_BASE}/system/health` },
     ];
   },
 };

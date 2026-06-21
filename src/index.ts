@@ -20,6 +20,7 @@ import {
   loadGeminiApiKeyFromConfig,
 } from './services/geminiService.js';
 import { startRealtimeWorker, getWorkerStats } from './services/realtimeWorker.js';
+import { runHealthChecks } from './services/healthChecks.js';
 import type { VerifiedDeal } from './types/index.js';
 
 const geminiApiKey = process.env.GEMINI_API_KEY || loadGeminiApiKeyFromConfig();
@@ -223,6 +224,21 @@ app.get('/stats', async (_req, res) => {
   } catch (err) {
     log('error', 'Failed to load stats', { error: String(err) });
     res.status(500).json({ error: 'Failed to load stats' });
+  }
+});
+
+app.get('/system/health', async (_req, res) => {
+  const client = getGlobalClient();
+  if (!client) {
+    res.status(503).json({ error: 'Database not initialized' });
+    return;
+  }
+  try {
+    const health = await runHealthChecks(client);
+    res.json(health);
+  } catch (err) {
+    log('error', 'Failed to run health checks', { error: String(err) });
+    res.status(500).json({ error: 'Failed to run health checks' });
   }
 });
 

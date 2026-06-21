@@ -13,7 +13,7 @@ function apiPath(path: string): string {
   return `${API_URL}${path}`;
 }
 
-type Tab = "scanner" | "inventory" | "studio" | "analytics";
+type Tab = "scanner" | "inventory" | "studio" | "analytics" | "system";
 
 type Platform = "vinted" | "kleinanzeigen";
 
@@ -42,6 +42,17 @@ interface PipelineStats {
   profitFiltered: number;
   imageAnalyses: number;
   alarms: number;
+}
+
+interface HealthCheck {
+  name: string;
+  status: "ready" | "error";
+  message: string;
+}
+
+interface SystemHealth {
+  timestamp: string;
+  checks: HealthCheck[];
 }
 
 interface Deal {
@@ -112,6 +123,8 @@ export default function DashboardClient() {
   const [dealsLoading, setDealsLoading] = useState(true);
   const [stats, setStats] = useState<PipelineStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
+  const [health, setHealth] = useState<SystemHealth | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
   const [prompt, setPrompt] = useState("");
   const [generating, setGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -146,6 +159,19 @@ export default function DashboardClient() {
       }
     >
   >({});
+
+  const loadHealth = useCallback(async () => {
+    setHealthLoading(true);
+    try {
+      const res = await fetch(`${apiPath("/")}system/health`);
+      if (!res.ok) throw new Error("health check failed");
+      setHealth((await res.json()) as SystemHealth);
+    } catch (err) {
+      setHealth(null);
+    } finally {
+      setHealthLoading(false);
+    }
+  }, []);
 
   const loadJobsAndDeals = useCallback(async () => {
     try {
@@ -183,11 +209,18 @@ export default function DashboardClient() {
     loadJobsAndDeals();
   }, [loadJobsAndDeals]);
 
+  useEffect(() => {
+    if (activeTab === "system") {
+      loadHealth();
+    }
+  }, [activeTab, loadHealth]);
+
   const tabs: { id: Tab; label: string; shortLabel: string }[] = [
     { id: "scanner", label: "Scanner-Zentrale", shortLabel: "Scanner" },
     { id: "inventory", label: "Lager / Inventar", shortLabel: "Lager" },
     { id: "studio", label: "KI-Studio", shortLabel: "KI" },
     { id: "analytics", label: "ROI-Analytics", shortLabel: "ROI" },
+    { id: "system", label: "System-Status", shortLabel: "Status" },
   ];
 
   const filteredDeals = useMemo(() => {
@@ -722,6 +755,51 @@ export default function DashboardClient() {
                 Generierte Bilder können später mit optimierten Deals verknüpft werden.
               </p>
             </div>
+          </section>
+        )}
+
+        {activeTab === "system" && (
+          <section className="space-y-6">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold">System-Status</h2>
+              <button
+                onClick={loadHealth}
+                disabled={healthLoading}
+                className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                {healthLoading ? "Prüfe..." : "Neu prüfen"}
+              </button>
+            </div>
+
+            {healthLoading ? (
+              <p className="text-sm text-zinc-500">System-Checks laufen...</p>
+            ) : !health ? (
+              <p className="text-sm text-red-600 dark:text-red-400">System-Status konnte nicht geladen werden.</p>
+            ) : (
+              <div className="space-y-4">
+                <p className="text-xs text-zinc-500">Zuletzt geprüft: {formatRelativeTime(health.timestamp)}</p>
+                <div className="grid gap-4 grid-cols-1 sm:grid-cols-2">
+                  {health.checks.map((check) => (
+                    <div
+                      key={check.name}
+                      className="flex items-start gap-3 rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
+                    >
+                      <span
+                        className={`mt-0.5 h-3 w-3 shrink-0 rounded-full ${
+                          check.status === "ready"
+                            ? "bg-green-500"
+                            : "bg-red-500"
+                        }`}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-zinc-900 dark:text-zinc-50">{check.name}</p>
+                        <p className="mt-0.5 text-xs text-zinc-500">{check.message}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
         )}
 
