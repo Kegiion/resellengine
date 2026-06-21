@@ -72,9 +72,27 @@ ALTER TABLE jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_config ENABLE ROW LEVEL SECURITY;
 ALTER TABLE deals ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY IF NOT EXISTS allow_all_jobs ON jobs FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY IF NOT EXISTS allow_all_app_config ON app_config FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY IF NOT EXISTS allow_all_deals ON deals FOR ALL USING (true) WITH CHECK (true);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE policyname = 'allow_all_jobs' AND tablename = 'jobs'
+  ) THEN
+    CREATE POLICY allow_all_jobs ON jobs FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE policyname = 'allow_all_app_config' AND tablename = 'app_config'
+  ) THEN
+    CREATE POLICY allow_all_app_config ON app_config FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE policyname = 'allow_all_deals' AND tablename = 'deals'
+  ) THEN
+    CREATE POLICY allow_all_deals ON deals FOR ALL USING (true) WITH CHECK (true);
+  END IF;
+END
+$$;
 
 -- Trigger function to update updated_at automatically
 CREATE OR REPLACE FUNCTION update_updated_at_column()
