@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.local
+
+# Data
+/data/*.db
+/data/*.db-journal
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Playwright
+playwright-report/
+test-results/
+
+# Next.js (web/)
+web/.next/
+web/out/
+web/node_modules/
+
+# Screenshots / local dev artifacts
+*.png
+*.jpg
+*.jpeg
+*.gif
+.playwright-mcp/
+

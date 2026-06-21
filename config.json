@@ -1,0 +1,41 @@
+{
+  "jobs": [
+    {
+      "id": "vinted-nike-dunk",
+      "platform": "vinted",
+      "keywords": ["nike", "dunk"],
+      "maxPrice": 80,
+      "minDesiredProfit": 15,
+      "condition": "good",
+      "enabled": true
+    },
+    {
+      "id": "kleinanzeigen-adidas-samba",
+      "platform": "kleinanzeigen",
+      "keywords": ["adidas", "samba"],
+      "maxPrice": 60,
+      "minDesiredProfit": 10,
+      "condition": "good",
+      "enabled": true
+    }
+  ],
+  "apiKeys": {
+    "removeBg": "",
+    "anthropic": "",
+    "openai": "",
+    "gemini": ""
+  },
+  "notifications": {
+    "discordWebhookUrl": ""
+  },
+  "antiBot": {
+    "minDelayMs": 2000,
+    "maxDelayMs": 5000,
+    "rotateUserAgents": true
+  },
+  "fees": {
+    "vintedSellerFeePercent": 0,
+    "vintedBuyerProtectionPercent": 0.05,
+    "shippingEstimate": 5.0
+  }
+}
