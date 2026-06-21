@@ -16,11 +16,7 @@ export interface SystemHealth {
 }
 
 async function checkVintedConnection(): Promise<HealthCheckResult> {
-  const antiBot = {
-    minDelayMs: 1000,
-    maxDelayMs: 3000,
-    rotateUserAgents: true,
-  };
+  const cookie = process.env.VINTED_SESSION_COOKIE;
   let browser;
   try {
     browser = await chromium.launch({ headless: true });
@@ -29,21 +25,50 @@ async function checkVintedConnection(): Promise<HealthCheckResult> {
       viewport: { width: 1440, height: 900 },
       locale: 'de-DE',
     });
+
+    if (cookie) {
+      await context.addCookies(
+        cookie.split(';').map((part) => {
+          const [name, ...valueParts] = part.trim().split('=');
+          return {
+            name: name || 'session',
+            value: valueParts.join('='),
+            domain: '.vinted.de',
+            path: '/',
+          };
+        })
+      );
+    }
+
     const page = await context.newPage();
     const url = 'https://www.vinted.de/catalog?search_text=ralph+lauren&price_to=50&order=newest_first';
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(2000);
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForTimeout(5000);
+
     const title = await page.title();
     const body = await page.locator('body').textContent();
-    const blocked = /captcha|cloudflare|access denied|blocked|403|429/i.test(body || '');
+    const blocked = /captcha|cloudflare|access denied|blocked|403|429|verify you are human/i.test(body || '');
     if (blocked || title.toLowerCase().includes('captcha')) {
       return { name: 'Vinted Connection', status: 'error', message: 'Vinted blockiert den Scraper (Captcha/Block).' };
     }
-    const hasItems = await page.locator('[data-testid="catalog-item"], .feed-grid__item').count();
-    if (hasItems === 0) {
+
+    const selectors = [
+      '[data-testid="catalog-item"]',
+      '[data-testid="feed-grid-item"]',
+      '.feed-grid__item',
+      'a[href^="/items/"]',
+      '[class*="item-details"]',
+    ];
+    let itemCount = 0;
+    for (const selector of selectors) {
+      itemCount = await page.locator(selector).count();
+      if (itemCount > 0) break;
+    }
+
+    if (itemCount === 0) {
       return { name: 'Vinted Connection', status: 'error', message: 'Keine Artikel auf der Vinted-Seite gefunden.' };
     }
-    return { name: 'Vinted Connection', status: 'ready', message: 'Scraper kann Vinted blockierungsfrei lesen.' };
+    return { name: 'Vinted Connection', status: 'ready', message: `Scraper kann Vinted blockierungsfrei lesen (${itemCount} Artikel sichtbar).` };
   } catch (err) {
     return { name: 'Vinted Connection', status: 'error', message: `Verbindung fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}` };
   } finally {
@@ -69,15 +94,21 @@ async function checkDecodoApi(): Promise<HealthCheckResult> {
   }
   const auth = Buffer.from(`${username}:${password}`).toString('base64');
   try {
-    const response = await axios.get('https://scraper-api.decodo.com/v2/account', {
-      headers: { Authorization: `Basic ${auth}` },
-      timeout: 15000,
-    });
-    const balance = response.data?.balance ?? response.data?.data?.balance ?? response.data?.credits ?? response.data?.requests_left;
-    if (balance !== undefined && Number(balance) <= 0) {
-      return { name: 'Decodo API', status: 'error', message: 'Decodo API authentifiziert, aber kein Guthaben verfügbar.' };
+    const response = await axios.post(
+      'https://scraper-api.decodo.com/v2/scrape',
+      {
+        url: 'https://www.vinted.de/catalog?search_text=ralph+lauren&price_to=50&order=newest_first',
+        method: 'GET',
+      },
+      {
+        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+        timeout: 60000,
+      }
+    );
+    if (response.status === 200 && Array.isArray(response.data?.results)) {
+      return { name: 'Decodo API', status: 'ready', message: 'Decodo API authentifiziert und Scrape-Endpunkt erreichbar.' };
     }
-    return { name: 'Decodo API', status: 'ready', message: 'Authentifiziert und Guthaben verfügbar.' };
+    return { name: 'Decodo API', status: 'error', message: 'Decodo API lieferte eine ungültige Antwort.' };
   } catch (err) {
     return { name: 'Decodo API', status: 'error', message: `Decodo API Test fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}` };
   }
