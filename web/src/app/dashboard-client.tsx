@@ -202,7 +202,25 @@ export default function DashboardClient() {
     const totalFees = deals.reduce((sum, d) => sum + (isValidNumber(d.fees) ? d.fees : 0), 0);
     const totalShipping = deals.reduce((sum, d) => sum + (isValidNumber(d.shipping) ? d.shipping : 0), 0);
     const netProfit = deals.reduce((sum, d) => sum + (isValidNumber(d.net_profit) ? d.net_profit : 0), 0);
-    return { totalSpent, totalRevenue, totalFees, totalShipping, netProfit };
+    const topDeals = [...deals]
+      .filter((d) => isValidNumber(d.net_profit))
+      .sort((a, b) => (b.net_profit ?? 0) - (a.net_profit ?? 0))
+      .slice(0, 5);
+    const buckets = [
+      { label: "<50%", min: -Infinity, max: 50 },
+      { label: "50-100%", min: 50, max: 100 },
+      { label: "100-200%", min: 100, max: 200 },
+      { label: "200-300%", min: 200, max: 300 },
+      { label: ">300%", min: 300, max: Infinity },
+    ];
+    const roiBuckets = buckets.map((b) => ({
+      label: b.label,
+      count: deals.filter((d) => {
+        const roi = d.roi_percent ?? 0;
+        return roi > b.min && roi <= b.max;
+      }).length,
+    }));
+    return { totalSpent, totalRevenue, totalFees, totalShipping, netProfit, topDeals, roiBuckets };
   }, [deals]);
 
   async function handleGenerateImage() {
@@ -728,6 +746,58 @@ export default function DashboardClient() {
                 <p className="mt-1 text-2xl font-semibold">{formatCurrency(analytics.netProfit)}</p>
               </div>
             </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <h3 className="mb-4 text-sm font-medium">Top-Deals nach Netto-Gewinn</h3>
+                {deals.length === 0 ? (
+                  <p className="text-sm text-zinc-500">Keine Deals vorhanden.</p>
+                ) : (
+                  <div className="space-y-3">
+                    {analytics.topDeals.map((d) => {
+                      const maxProfit = Math.max(...analytics.topDeals.map((x) => x.net_profit ?? 0), 1);
+                      const pct = ((d.net_profit ?? 0) / maxProfit) * 100;
+                      return (
+                        <div key={d.id} className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="truncate pr-2 text-zinc-700 dark:text-zinc-300">{d.title}</span>
+                            <span className="shrink-0 font-medium">{formatCurrency(d.net_profit)}</span>
+                          </div>
+                          <div className="h-2 w-full overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
+                            <div
+                              className="h-full rounded-full bg-zinc-800 dark:bg-zinc-200"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+                <h3 className="mb-4 text-sm font-medium">ROI-Verteilung</h3>
+                {analytics.roiBuckets.length === 0 ? (
+                  <p className="text-sm text-zinc-500">Keine ROI-Daten vorhanden.</p>
+                ) : (
+                  <div className="flex h-48 items-end gap-2">
+                    {analytics.roiBuckets.map((bucket) => {
+                      const maxCount = Math.max(...analytics.roiBuckets.map((b) => b.count), 1);
+                      const pct = (bucket.count / maxCount) * 100;
+                      return (
+                        <div key={bucket.label} className="flex flex-1 flex-col items-center gap-1">
+                          <div className="text-xs text-zinc-500">{bucket.count}</div>
+                          <div className="w-full rounded-t bg-zinc-800 dark:bg-zinc-200" style={{ height: `${pct}%` }} />
+                          <div className="text-xs text-zinc-500">{bucket.label}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
             <p className="text-sm text-zinc-600 dark:text-zinc-400">
               Zahlen basieren auf {deals.length} geladenen Deal{deals.length !== 1 ? "s" : ""} aus der API.
             </p>
