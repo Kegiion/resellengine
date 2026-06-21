@@ -15,55 +15,65 @@ export interface SystemHealth {
   checks: HealthCheckResult[];
 }
 
+function parseVintedProxy() {
+  const proxyUrl = process.env.VINTED_PROXY_URL;
+  if (!proxyUrl) return undefined;
+  try {
+    const parsed = new URL(proxyUrl);
+    return {
+      protocol: parsed.protocol.replace(':', ''),
+      host: parsed.hostname,
+      port: Number(parsed.port),
+      auth: parsed.username
+        ? { username: decodeURIComponent(parsed.username), password: decodeURIComponent(parsed.password || '') }
+        : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 async function checkVintedConnection(): Promise<HealthCheckResult> {
   const cookie = process.env.VINTED_SESSION_COOKIE;
-  const decodoUsername = process.env.DECODO_API_USERNAME;
-  const decodoPassword = process.env.DECODO_API_PASSWORD;
+  const proxy = parseVintedProxy();
   const userAgent = getRandomUserAgent();
   const testUrl = 'https://www.vinted.de/catalog?search_text=ralph+lauren&price_to=50&order=newest_first';
   const apiUrl = 'https://www.vinted.de/api/v2/catalog/items?search_text=ralph+lauren&price_to=50&order=newest_first&page=1&per_page=20';
 
-  // 1. Try Vinted API with session cookie.
-  if (cookie) {
-    try {
-      const headers: Record<string, string> = {
-        Accept: 'application/json, text/plain, */*',
-        'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
-        'User-Agent': userAgent,
-        Referer: testUrl,
-        Cookie: cookie,
-      };
-      const response = await axios.get(apiUrl, { headers, timeout: 20000 });
-      const items = response.data?.items || [];
-      if (items.length > 0) {
-        return { name: 'Vinted Connection', status: 'ready', message: `Vinted API erreichbar (${items.length} Artikel).` };
-      }
-    } catch (err) {
-      log('warn', 'Vinted health check API attempt failed', { error: String(err) });
-    }
+  if (!proxy) {
+    return { name: 'Vinted Connection', status: 'error', message: 'VINTED_PROXY_URL nicht gesetzt.' };
   }
 
-  // 2. Try Decodo scrape to confirm Vinted is reachable from a proxy.
-  if (decodoUsername && decodoPassword) {
-    try {
-      const auth = Buffer.from(`${decodoUsername}:${decodoPassword}`).toString('base64');
-      const response = await axios.post(
-        'https://scraper-api.decodo.com/v2/scrape',
-        { url: testUrl, method: 'GET' },
-        { headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' }, timeout: 60000 }
-      );
-      const html = response.data?.results?.[0]?.content || '';
-      const blocked = /captcha|cloudflare|access denied|blocked|403|429|verify you are human/i.test(html);
-      const hasItems = /data-testid="catalog-item"|\/items\/\d+/.test(html);
-      if (!blocked && html.length > 0) {
-        return { name: 'Vinted Connection', status: 'ready', message: hasItems ? 'Vinted über Decodo erreichbar und Artikel sichtbar.' : 'Vinted über Decodo erreichbar (Feed geladen).' };
-      }
-    } catch (err) {
-      log('warn', 'Vinted health check Decodo attempt failed', { error: String(err) });
+  // 1. Try Vinted API through the residential proxy.
+  try {
+    const headers: Record<string, string> = {
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+      'User-Agent': userAgent,
+      Referer: testUrl,
+    };
+    if (cookie) {
+      headers.Cookie = cookie;
     }
+    const response = await axios.get(apiUrl, {
+      headers,
+      timeout: 30000,
+      proxy: {
+        protocol: proxy.protocol,
+        host: proxy.host,
+        port: proxy.port,
+        auth: proxy.auth,
+      },
+    });
+    const items = response.data?.items || [];
+    if (items.length > 0) {
+      return { name: 'Vinted Connection', status: 'ready', message: `Vinted API über Proxy erreichbar (${items.length} Artikel).` };
+    }
+  } catch (err) {
+    log('warn', 'Vinted health check API via proxy failed', { error: String(err) });
   }
 
-  // 3. Fallback: local browser check ( verifies page loads and is not blocked ).
+  // 2. Fallback: browser through the residential proxy.
   let browser;
   try {
     browser = await chromium.launch({ headless: true });
@@ -71,6 +81,7 @@ async function checkVintedConnection(): Promise<HealthCheckResult> {
       userAgent,
       viewport: { width: 1440, height: 900 },
       locale: 'de-DE',
+      proxy: { server: `${proxy.protocol}://${proxy.host}:${proxy.port}`, username: proxy.auth?.username, password: proxy.auth?.password },
     });
 
     if (cookie) {
@@ -95,13 +106,13 @@ async function checkVintedConnection(): Promise<HealthCheckResult> {
     const body = await page.locator('body').textContent();
     const blocked = /captcha|cloudflare|access denied|blocked|403|429|verify you are human/i.test(body || '');
     if (blocked || title.toLowerCase().includes('captcha')) {
-      return { name: 'Vinted Connection', status: 'error', message: 'Vinted blockiert den Scraper (Captcha/Block).' };
+      return { name: 'Vinted Connection', status: 'error', message: 'Vinted blockiert den Scraper trotz Proxy (Captcha/Block).' };
     }
     if (!/vinted/i.test(title)) {
       return { name: 'Vinted Connection', status: 'error', message: 'Vinted-Seite wurde nicht korrekt geladen.' };
     }
 
-    return { name: 'Vinted Connection', status: 'ready', message: 'Vinted-Seite erreichbar und nicht blockiert.' };
+    return { name: 'Vinted Connection', status: 'ready', message: 'Vinted-Seite über Proxy erreichbar und nicht blockiert.' };
   } catch (err) {
     return { name: 'Vinted Connection', status: 'error', message: `Verbindung fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}` };
   } finally {

@@ -8,6 +8,27 @@ import type { AntiBotConfig, ScrapedItem } from '../types/index.js';
 const BASE_URL = 'https://www.vinted.de';
 const API_BASE = 'https://www.vinted.de/api/v2';
 
+function getVintedProxyAgent(): { protocol: string; host: string; port: number; auth?: { username: string; password: string } } | undefined {
+  const proxyUrl = process.env.VINTED_PROXY_URL;
+  if (!proxyUrl) return undefined;
+  try {
+    const parsed = new URL(proxyUrl);
+    return {
+      protocol: parsed.protocol.replace(':', ''),
+      host: parsed.hostname,
+      port: Number(parsed.port),
+      auth: parsed.username
+        ? {
+            username: decodeURIComponent(parsed.username),
+            password: decodeURIComponent(parsed.password || ''),
+          }
+        : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 interface VintedApiItem {
   id: number;
   title: string;
@@ -81,7 +102,8 @@ async function fetchVintedApi(
       headers.Cookie = cookie;
     }
 
-    const response = await axios.get(url, { headers, timeout: 20000 });
+    const proxy = getVintedProxyAgent();
+    const response = await axios.get(url, { headers, timeout: 20000, proxy });
 
     const items = response.data?.items || [];
     return items.filter((item: VintedApiItem) => item.is_visible !== false);
@@ -97,11 +119,13 @@ async function scrapeVintedHtml(
 ): Promise<ScrapedItem[]> {
   let browser;
   try {
+    const proxy = getVintedProxyAgent();
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({
       userAgent: getRandomUserAgent(),
       viewport: { width: 1440, height: 900 },
       locale: 'de-DE',
+      proxy: proxy ? { server: `${proxy.protocol}://${proxy.host}:${proxy.port}`, username: proxy.auth?.username, password: proxy.auth?.password } : undefined,
     });
     const page = await context.newPage();
 
