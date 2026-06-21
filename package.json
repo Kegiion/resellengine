@@ -9,7 +9,9 @@
     "build": "tsc",
     "test:search": "tsx scripts/test-search.ts",
     "db:init": "tsx scripts/db-init.ts",
-    "scraper:install": "playwright install chromium"
+    "scraper:install": "playwright install chromium",
+    "web:build": "cd web && npm install && npm run build",
+    "web:dev": "cd web && npm run dev"
   },
   "dependencies": {
     "@google/genai": "^2.9.0",
