@@ -41,11 +41,29 @@ interface VintedApiItem {
   brand_title?: string;
   size_title?: string;
   is_visible?: boolean;
+  created_at_ts?: string;
+  photo_uploaded_at?: string;
+  timestamp?: string;
 }
 
 function buildCatalogApiUrl(keywords: string[], maxPrice: number, page = 1): string {
   const searchText = encodeURIComponent(keywords.join(' '));
   return `${API_BASE}/catalog/items?search_text=${searchText}&price_to=${maxPrice}&order=newest_first&page=${page}&per_page=20`;
+}
+
+function getItemListedAt(item: VintedApiItem): string {
+  const tsSeconds =
+    Number(item.created_at_ts) ||
+    Number(item.photo_uploaded_at) ||
+    Number(item.timestamp) ||
+    0;
+  if (tsSeconds > 1_000_000_000_000) {
+    return new Date(tsSeconds).toISOString();
+  }
+  if (tsSeconds > 1_000_000_000) {
+    return new Date(tsSeconds * 1000).toISOString();
+  }
+  return new Date().toISOString();
 }
 
 function buildSearchPageUrl(keywords: string[], maxPrice: number): string {
@@ -66,6 +84,7 @@ function mapApiItem(item: VintedApiItem): ScrapedItem {
   const price = Number(item.price?.amount) || 0;
   const currency = item.price?.currency_code || 'EUR';
   const path = item.path || '';
+  const listedAt = getItemListedAt(item);
   return {
     id: `vinted-${item.id}`,
     platform: 'vinted',
@@ -77,6 +96,7 @@ function mapApiItem(item: VintedApiItem): ScrapedItem {
     brand: item.brand_title,
     size: item.size_title,
     scrapedAt: new Date().toISOString(),
+    listedAt,
   };
 }
 
@@ -204,6 +224,25 @@ async function scrapeVintedHtml(
   } finally {
     await browser?.close().catch(() => undefined);
   }
+}
+
+export async function searchVintedStream(
+  keywords: string[],
+  maxPrice: number,
+  antiBot: AntiBotConfig
+): Promise<ScrapedItem[]> {
+  const cookie = process.env.VINTED_SESSION_COOKIE;
+  const apiItems = await fetchVintedApi(keywords, maxPrice, antiBot, cookie);
+
+  if (apiItems.length > 0) {
+    const items = apiItems
+      .filter((item) => Number(item.price?.amount) <= maxPrice)
+      .map(mapApiItem)
+      .slice(0, 10);
+    return items;
+  }
+
+  return [];
 }
 
 export async function searchVinted(

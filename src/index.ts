@@ -12,6 +12,7 @@ import {
   getGlobalClient,
   saveOptimizedDescription,
   dealExists,
+  getFullConfig,
 } from './services/database.js';
 import { log } from './utils/logger.js';
 import {
@@ -21,6 +22,7 @@ import {
 } from './services/geminiService.js';
 import { startRealtimeWorker, getWorkerStats } from './services/realtimeWorker.js';
 import { startScheduler } from './services/scheduler.js';
+import { startVintedSniper } from './services/vintedSniper.js';
 import { initDiscordBot } from './discordBot.js';
 import { runHealthChecks } from './services/healthChecks.js';
 import type { VerifiedDeal } from './types/index.js';
@@ -300,6 +302,14 @@ async function main() {
 
   startRealtimeWorker(client);
   startScheduler(client, { intervalMs: 180_000 });
+
+  try {
+    const config = await getFullConfig(client);
+    startVintedSniper(client, config);
+  } catch (error) {
+    log('error', 'Failed to load config for sniper', { error: String(error) });
+  }
+
   initDiscordBot().catch((error) => {
     log('error', 'Discord bot initialization failed', { error: String(error) });
   });

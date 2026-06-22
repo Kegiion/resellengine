@@ -68,6 +68,7 @@ export interface ScrapedItem {
   brand?: string;
   size?: string;
   scrapedAt: string;
+  listedAt?: string;
 }
 
 export interface VerifiedDeal {
