@@ -16,34 +16,28 @@ interface GuestCookies {
 async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
   const proxy = getVintedProxyAgent();
   const userAgent = antiBot.rotateUserAgents ? getRandomUserAgent() : undefined;
+  let browser;
 
   await randomDelay(1000, 2500);
 
   try {
-    const response = await axios.get(BASE_URL, {
-      headers: {
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
-        'User-Agent': userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Upgrade-Insecure-Requests': '1',
-      },
-      timeout: 20000,
-      proxy,
-      withCredentials: true,
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({
+      userAgent: userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      viewport: { width: 1440, height: 900 },
+      locale: 'de-DE',
+      proxy: proxy ? { server: `${proxy.protocol}://${proxy.host}:${proxy.port}`, username: proxy.auth?.username, password: proxy.auth?.password } : undefined,
     });
 
-    const rawCookies = response.headers['set-cookie'] || [];
-    const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance'];
-    const cookiePairs: string[] = [];
+    const page = await context.newPage();
+    await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForTimeout(2000 + Math.random() * 2000);
 
-    for (const setCookie of rawCookies) {
-      const firstPart = setCookie.split(';')[0].trim();
-      if (!firstPart) continue;
-      const [name] = firstPart.split('=');
-      if (wantedNames.includes(name)) {
-        cookiePairs.push(firstPart);
-      }
-    }
+    const cookies = await context.cookies(BASE_URL);
+    const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance', 'datadome'];
+    const cookiePairs = cookies
+      .filter((c) => wantedNames.includes(c.name))
+      .map((c) => `${c.name}=${c.value}`);
 
     const cookieHeader = cookiePairs.join('; ');
     if (!cookieHeader.includes('_vinted_fr_session')) {
@@ -51,14 +45,18 @@ async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies |
       return null;
     }
 
-    const csrfMatch = typeof response.data === 'string' ? response.data.match(/name="csrf-token" content="([^"]+)"/) : null;
-    const csrfToken = csrfMatch ? csrfMatch[1] : undefined;
+    const csrfToken = await page.evaluate(() => {
+      const meta = document.querySelector('meta[name="csrf-token"]');
+      return meta?.getAttribute('content') || undefined;
+    });
 
     log('info', 'Guest handshake successful', { cookieCount: cookiePairs.length, hasCsrf: !!csrfToken });
     return { cookieHeader, csrfToken };
   } catch (error) {
     log('warn', 'Guest handshake failed', { error: String(error) });
     return null;
+  } finally {
+    await browser?.close().catch(() => undefined);
   }
 }
 
