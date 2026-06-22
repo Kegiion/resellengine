@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { log } from '../utils/logger.js';
+import { sendFilterLogEmbed, sendMasterDealEmbed, isDiscordBotReady } from '../discordBot.js';
 import type { VerifiedDeal, ScrapedItem } from '../types/index.js';
 
 export async function sendFilterLogNotification(
@@ -7,6 +8,15 @@ export async function sendFilterLogNotification(
   stage: number,
   reason: string
 ): Promise<void> {
+  if (isDiscordBotReady()) {
+    try {
+      await sendFilterLogEmbed(item, stage, reason);
+      return;
+    } catch (error) {
+      log('warn', 'Discord bot filter log failed; falling back to webhook', { itemId: item.id, stage, error: String(error) });
+    }
+  }
+
   const webhookUrl = process.env.DISCORD_FILTER_WEBHOOK_URL || '';
   if (!webhookUrl) {
     log('info', 'No Discord filter webhook configured; skipping filter log.', { itemId: item.id, stage });
@@ -30,13 +40,22 @@ export async function sendFilterLogNotification(
 
   try {
     await axios.post(webhookUrl, { embeds: [embed] });
-    log('info', 'Discord filter log sent', { itemId: item.id, stage });
+    log('info', 'Discord filter log sent via webhook fallback', { itemId: item.id, stage });
   } catch (error) {
     log('error', 'Failed to send Discord filter log', { itemId: item.id, stage, error: String(error) });
   }
 }
 
 export async function sendDealNotification(deal: VerifiedDeal): Promise<void> {
+  if (isDiscordBotReady()) {
+    try {
+      await sendMasterDealEmbed(deal);
+      return;
+    } catch (error) {
+      log('warn', 'Discord bot master deal failed; falling back to webhook', { dealId: deal.id, error: String(error) });
+    }
+  }
+
   const webhookUrl = process.env.DISCORD_WEBHOOK_URL || '';
   if (!webhookUrl) {
     log('info', 'No Discord webhook configured; skipping notification.', { dealId: deal.id });
@@ -56,13 +75,13 @@ export async function sendDealNotification(deal: VerifiedDeal): Promise<void> {
       { name: 'Zustand', value: deal.condition || 'unbekannt', inline: true },
     ],
     image: deal.imageUrl ? { url: deal.imageUrl } : undefined,
-    footer: { text: 'ResellEngine • Phase 1' },
+    footer: { text: 'ResellEngine • Master Deal' },
     timestamp: deal.createdAt,
   };
 
   try {
     await axios.post(webhookUrl, { embeds: [embed] });
-    log('info', 'Discord notification sent', { dealId: deal.id });
+    log('info', 'Discord notification sent via webhook fallback', { dealId: deal.id });
   } catch (error) {
     log('error', 'Failed to send Discord notification', { dealId: deal.id, error: String(error) });
   }
