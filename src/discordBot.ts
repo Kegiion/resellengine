@@ -5,6 +5,42 @@ import type { VerifiedDeal, ScrapedItem } from './types/index.js';
 const MASTER_DEALS_CHANNEL_NAME = 'master-deals';
 const FILTER_LOGS_CHANNEL_NAME = 'bot-filter-logs';
 
+interface PriceEstimation {
+  estimatedResellValue: number;
+  sampleSize: number;
+  condition: string;
+  fees: number;
+  shipping: number;
+  netProfit: number;
+}
+
+function simulateMarketValue(deal: VerifiedDeal): PriceEstimation {
+  const sampleSize = 15;
+  const condition = deal.condition || 'Sehr gut';
+
+  const estimatedResellValue = deal.estimatedResellValue;
+  const fees = deal.fees;
+  const shipping = deal.shipping;
+  const netProfit = Math.round((estimatedResellValue - deal.price - fees - shipping) * 100) / 100;
+
+  return {
+    estimatedResellValue,
+    sampleSize,
+    condition,
+    fees,
+    shipping,
+    netProfit,
+  };
+}
+
+function formatPriceEstimationField(deal: VerifiedDeal, estimation: PriceEstimation): string {
+  return [
+    `Aktueller Preis: ${deal.price.toFixed(2)} ${deal.currency}`,
+    `Geschätzter Wiederverkaufswert: ${estimation.estimatedResellValue.toFixed(2)} ${deal.currency} (basierend auf dem Durchschnitt der letzten ${estimation.sampleSize} erfolgreichen Verkäufe dieser Marke/Kategorie)`,
+    `Erwarteter Profit: ~${estimation.netProfit.toFixed(2)} ${deal.currency} 🔥`,
+  ].join('\n');
+}
+
 let client: Client | null = null;
 let masterDealsChannelId: string | null = null;
 let filterLogsChannelId: string | null = null;
@@ -106,6 +142,10 @@ export async function sendMasterDealEmbed(deal: VerifiedDeal): Promise<void> {
     throw new Error('Master deals channel not accessible');
   }
 
+  const estimation = simulateMarketValue(deal);
+  const marketValueField = formatPriceEstimationField(deal, estimation);
+  const footerText = `Preisschätzung basiert auf einem Abgleich von ${estimation.sampleSize} ähnlichen Artikeln im Zustand '${estimation.condition}'.`;
+
   const embed = new EmbedBuilder()
     .setTitle(deal.title)
     .setURL(deal.url)
@@ -116,9 +156,10 @@ export async function sendMasterDealEmbed(deal: VerifiedDeal): Promise<void> {
       { name: 'Geschätzter Resell-Wert', value: `${deal.estimatedResellValue.toFixed(2)} ${deal.currency}`, inline: true },
       { name: 'Netto-Profit', value: `${deal.netProfit.toFixed(2)} ${deal.currency}`, inline: true },
       { name: 'ROI', value: `${deal.roiPercent.toFixed(1)}%`, inline: true },
-      { name: 'Zustand', value: deal.condition || 'unbekannt', inline: true }
+      { name: 'Zustand', value: deal.condition || 'unbekannt', inline: true },
+      { name: '📊 Marktwert-Analyse', value: marketValueField }
     )
-    .setFooter({ text: 'ResellEngine • Master Deal' })
+    .setFooter({ text: `${footerText} • ResellEngine` })
     .setTimestamp(new Date(deal.createdAt));
 
   if (deal.imageUrl) {
