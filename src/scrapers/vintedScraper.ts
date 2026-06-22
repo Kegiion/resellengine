@@ -31,9 +31,10 @@ async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies |
 
     const page = await context.newPage();
     await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(2000 + Math.random() * 2000);
+    await page.waitForTimeout(4000 + Math.random() * 3000);
 
     const allCookies = await context.cookies();
+    const allNames = allCookies.map((c) => c.name).join(', ');
     const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance', 'datadome'];
     const cookiePairs = allCookies
       .filter((c) => wantedNames.includes(c.name))
@@ -41,7 +42,7 @@ async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies |
 
     const cookieHeader = cookiePairs.join('; ');
     if (!cookieHeader.includes('_vinted_fr_session')) {
-      log('warn', 'Guest handshake did not return _vinted_fr_session');
+      log('warn', 'Guest handshake did not return _vinted_fr_session', { allCookies: allNames });
       return null;
     }
 
