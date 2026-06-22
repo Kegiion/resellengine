@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { chromium } from 'playwright';
+import { chromium, Browser, BrowserContext } from 'playwright';
 import { randomDelay, humanizedDelay } from '../utils/delay.js';
 import { log } from '../utils/logger.js';
 import { getRandomUserAgent } from '../utils/userAgents.js';
@@ -7,59 +7,13 @@ import type { AntiBotConfig, ScrapedItem } from '../types/index.js';
 
 const BASE_URL = 'https://www.vinted.de';
 const API_BASE = 'https://www.vinted.de/api/v2';
+const COOKIE_REFRESH_MS = 10 * 60 * 1000;
 
-interface GuestCookies {
-  cookieHeader: string;
-  csrfToken?: string;
-}
-
-async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
-  const proxy = getVintedProxyAgent();
-  const userAgent = antiBot.rotateUserAgents ? getRandomUserAgent() : undefined;
-  let browser;
-
-  await randomDelay(1000, 2500);
-
-  try {
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      userAgent: userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      viewport: { width: 1440, height: 900 },
-      locale: 'de-DE',
-      proxy: proxy ? { server: `${proxy.protocol}://${proxy.host}:${proxy.port}`, username: proxy.auth?.username, password: proxy.auth?.password } : undefined,
-    });
-
-    const page = await context.newPage();
-    await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(4000 + Math.random() * 3000);
-
-    const allCookies = await context.cookies();
-    const allNames = allCookies.map((c) => c.name).join(', ');
-    const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance', 'datadome'];
-    const cookiePairs = allCookies
-      .filter((c) => wantedNames.includes(c.name))
-      .map((c) => `${c.name}=${c.value}`);
-
-    const cookieHeader = cookiePairs.join('; ');
-    if (!cookieHeader.includes('_vinted_fr_session')) {
-      log('warn', 'Guest handshake did not return _vinted_fr_session', { allCookies: allNames });
-      return null;
-    }
-
-    const csrfToken = await page.evaluate(() => {
-      const meta = document.querySelector('meta[name="csrf-token"]');
-      return meta?.getAttribute('content') || undefined;
-    });
-
-    log('info', 'Guest handshake successful', { cookieCount: cookiePairs.length, hasCsrf: !!csrfToken });
-    return { cookieHeader, csrfToken };
-  } catch (error) {
-    log('warn', 'Guest handshake failed', { error: String(error) });
-    return null;
-  } finally {
-    await browser?.close().catch(() => undefined);
-  }
-}
+let sharedBrowser: Browser | null = null;
+let sharedContext: BrowserContext | null = null;
+let sharedCookieHeader: string | null = null;
+let sharedCookieTimestamp = 0;
+let sharedProxyKey: string | null = null;
 
 function getVintedProxyAgent(): { protocol: string; host: string; port: number; auth?: { username: string; password: string } } | undefined {
   const proxyUrl = process.env.VINTED_PROXY_URL;
@@ -80,6 +34,130 @@ function getVintedProxyAgent(): { protocol: string; host: string; port: number; 
   } catch {
     return undefined;
   }
+}
+
+function proxyKey(proxy: ReturnType<typeof getVintedProxyAgent>): string {
+  if (!proxy) return 'none';
+  const auth = proxy.auth ? `${proxy.auth.username}:` : '';
+  return `${proxy.protocol}://${proxy.host}:${proxy.port}:${auth}`;
+}
+
+function buildContextProxy(
+  proxy: ReturnType<typeof getVintedProxyAgent>
+): { server: string; username?: string; password?: string } | undefined {
+  if (!proxy) return undefined;
+  return {
+    server: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
+    username: proxy.auth?.username,
+    password: proxy.auth?.password,
+  };
+}
+
+async function ensureSharedBrowser(): Promise<Browser> {
+  if (sharedBrowser) return sharedBrowser;
+  sharedBrowser = await chromium.launch({ headless: true });
+  return sharedBrowser;
+}
+
+async function ensureSharedContext(
+  proxy: ReturnType<typeof getVintedProxyAgent>,
+  userAgent?: string
+): Promise<BrowserContext> {
+  const newKey = proxyKey(proxy);
+  if (sharedContext && sharedProxyKey === newKey) return sharedContext;
+
+  if (sharedContext) {
+    await sharedContext.close().catch(() => undefined);
+    sharedContext = null;
+  }
+
+  const browser = await ensureSharedBrowser();
+  sharedContext = await browser.newContext({
+    userAgent: userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    viewport: { width: 1440, height: 900 },
+    locale: 'de-DE',
+    proxy: buildContextProxy(proxy),
+  });
+  sharedProxyKey = newKey;
+  return sharedContext;
+}
+
+interface GuestCookies {
+  cookieHeader: string;
+  csrfToken?: string;
+  accessToken?: string;
+}
+
+async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
+  const proxy = getVintedProxyAgent();
+  const userAgent = antiBot.rotateUserAgents ? getRandomUserAgent() : undefined;
+  const now = Date.now();
+
+  if (sharedCookieHeader && now - sharedCookieTimestamp < COOKIE_REFRESH_MS) {
+    return { cookieHeader: sharedCookieHeader };
+  }
+
+  await randomDelay(1000, 2500);
+
+  try {
+    const context = await ensureSharedContext(proxy, userAgent);
+    const page = await context.newPage();
+    await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
+    await page.waitForTimeout(4000 + Math.random() * 3000);
+
+    const allCookies = await context.cookies();
+    const allNames = allCookies.map((c: { name: string }) => c.name).join(', ');
+    const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance', 'datadome', 'access_token_web'];
+    const cookiePairs = allCookies
+      .filter((c: { name: string }) => wantedNames.includes(c.name))
+      .map((c: { name: string; value: string }) => `${c.name}=${c.value}`);
+
+    const cookieHeader = cookiePairs.join('; ');
+    if (!cookieHeader.includes('_vinted_fr_session')) {
+      log('warn', 'Guest handshake did not return _vinted_fr_session', { allCookies: allNames });
+      await page.close().catch(() => undefined);
+      return null;
+    }
+
+    const accessToken = allCookies.find((c: { name: string; value: string }) => c.name === 'access_token_web')?.value;
+    if (!accessToken) {
+      log('warn', 'Guest handshake did not return access_token_web', { allCookies: allNames });
+      await page.close().catch(() => undefined);
+      return null;
+    }
+
+    const csrfToken = await page.evaluate(() => {
+      const meta = document.querySelector('meta[name="csrf-token"]');
+      return meta?.getAttribute('content') || undefined;
+    });
+
+    await page.close().catch(() => undefined);
+
+    sharedCookieHeader = cookieHeader;
+    sharedCookieTimestamp = now;
+
+    log('info', 'Guest handshake successful', { cookieCount: cookiePairs.length, hasCsrf: !!csrfToken, hasAccessToken: true });
+    return { cookieHeader, csrfToken, accessToken };
+  } catch (error) {
+    log('warn', 'Guest handshake failed', { error: String(error) });
+    sharedCookieHeader = null;
+    sharedCookieTimestamp = 0;
+    return null;
+  }
+}
+
+export async function closeVintedBrowser(): Promise<void> {
+  if (sharedContext) {
+    await sharedContext.close().catch(() => undefined);
+    sharedContext = null;
+  }
+  if (sharedBrowser) {
+    await sharedBrowser.close().catch(() => undefined);
+    sharedBrowser = null;
+  }
+  sharedCookieHeader = null;
+  sharedCookieTimestamp = 0;
+  sharedProxyKey = null;
 }
 
 interface VintedApiItem {
@@ -178,6 +256,7 @@ async function fetchVintedApi(
       Cookie: guest.cookieHeader,
       'X-CSRF-Token': guest.csrfToken || '',
       'X-Requested-With': 'XMLHttpRequest',
+      Authorization: `Bearer ${guest.accessToken}`,
     };
 
     const proxy = getVintedProxyAgent();
@@ -195,16 +274,10 @@ async function scrapeVintedHtml(
   keywords: string[],
   maxPrice: number
 ): Promise<ScrapedItem[]> {
-  let browser;
+  let context: BrowserContext | null = null;
   try {
     const proxy = getVintedProxyAgent();
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      userAgent: getRandomUserAgent(),
-      viewport: { width: 1440, height: 900 },
-      locale: 'de-DE',
-      proxy: proxy ? { server: `${proxy.protocol}://${proxy.host}:${proxy.port}`, username: proxy.auth?.username, password: proxy.auth?.password } : undefined,
-    });
+    context = await ensureSharedContext(proxy, getRandomUserAgent());
     const page = await context.newPage();
 
     const url = buildSearchPageUrl(keywords, maxPrice);
@@ -257,12 +330,14 @@ async function scrapeVintedHtml(
       return results.slice(0, 20);
     });
 
+    await page.close().catch(() => undefined);
+
     if (items.length === 0) {
       log('warn', 'Vinted HTML scrape returned no items');
       return [];
     }
 
-    return items.map((item) => {
+    return items.map((item: { id: number; title: string; priceText: string; imageUrl?: string }) => {
       const normalized = item.priceText.replace(/\./g, '').replace(/,/g, '.');
       const price = Number((normalized.match(/\d+(?:\.\d+)?/) || ['0'])[0]);
       return {
@@ -279,8 +354,6 @@ async function scrapeVintedHtml(
   } catch (error) {
     log('warn', 'Vinted HTML scrape failed', { error: String(error) });
     return [];
-  } finally {
-    await browser?.close().catch(() => undefined);
   }
 }
 

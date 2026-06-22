@@ -34,18 +34,75 @@ function parseProxy() {
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
+const BASE_URL = 'https://www.vinted.de';
+const API_BASE = 'https://www.vinted.de/api/v2';
+
+let sharedBrowser = null;
+let sharedContext = null;
+
+async function ensureSharedContext(proxy) {
+  if (sharedContext) return sharedContext;
+  sharedBrowser = await chromium.launch({ headless: true });
+  sharedContext = await sharedBrowser.newContext({
+    userAgent: USER_AGENT,
+    viewport: { width: 1440, height: 900 },
+    locale: 'de-DE',
+    proxy: proxy
+      ? {
+          server: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
+          username: proxy.auth?.username,
+          password: proxy.auth?.password,
+        }
+      : undefined,
+  });
+  return sharedContext;
+}
+
+async function fetchGuestCookies(proxy) {
+  const context = await ensureSharedContext(proxy);
+  const page = await context.newPage();
+  await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
+  await page.waitForTimeout(4000 + Math.random() * 3000);
+
+  const allCookies = await context.cookies();
+  const allNames = allCookies.map((c) => c.name).join(', ');
+  const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance', 'datadome'];
+  const cookiePairs = allCookies
+    .filter((c) => wantedNames.includes(c.name))
+    .map((c) => `${c.name}=${c.value}`);
+  const cookieHeader = cookiePairs.join('; ');
+
+  const csrfToken = await page.evaluate(() => {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta?.getAttribute('content') || undefined;
+  });
+
+  await page.close().catch(() => undefined);
+  logFile('guest-cookies.txt', `Names: ${allNames}\n\nHeader: ${cookieHeader}\n\nCSRF: ${csrfToken || 'none'}`);
+  return { cookieHeader, csrfToken, allNames, allCookies };
+}
+
 async function testApi() {
   const proxy = parseProxy();
   const url =
-    'https://www.vinted.de/api/v2/catalog/items?search_text=ralph+lauren&price_to=50&order=newest_first&page=1&per_page=20';
+    `${API_BASE}/catalog/items?search_text=ralph+lauren&price_to=50&order=newest_first&page=1&per_page=20`;
+  const guest = await fetchGuestCookies(proxy);
+  if (!guest.cookieHeader.includes('_vinted_fr_session')) {
+    console.log('Guest handshake missing _vinted_fr_session, got:', guest.allNames);
+    return;
+  }
+  const accessToken = guest.allCookies.find((c) => c.name === 'access_token_web')?.value;
   const headers = {
     Accept: 'application/json, text/plain, */*',
     'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
     'User-Agent': USER_AGENT,
     Referer: 'https://www.vinted.de/catalog?search_text=ralph+lauren&price_to=50&order=newest_first',
+    Cookie: guest.cookieHeader,
+    'X-CSRF-Token': guest.csrfToken || '',
+    'X-Requested-With': 'XMLHttpRequest',
   };
-  if (process.env.VINTED_SESSION_COOKIE) {
-    headers.Cookie = process.env.VINTED_SESSION_COOKIE;
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
   }
   try {
     const response = await axios.get(url, { headers, timeout: 30000, proxy });
@@ -61,37 +118,9 @@ async function testApi() {
 
 async function testBrowser() {
   const proxy = parseProxy();
-  let browser;
+  const context = await ensureSharedContext(proxy);
+  const page = await context.newPage();
   try {
-    browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext({
-      userAgent: USER_AGENT,
-      viewport: { width: 1440, height: 900 },
-      locale: 'de-DE',
-      proxy: proxy
-        ? {
-            server: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
-            username: proxy.auth?.username,
-            password: proxy.auth?.password,
-          }
-        : undefined,
-    });
-
-    if (process.env.VINTED_SESSION_COOKIE) {
-      await context.addCookies(
-        process.env.VINTED_SESSION_COOKIE.split(';').map((part) => {
-          const [name, ...valueParts] = part.trim().split('=');
-          return {
-            name: name || 'session',
-            value: valueParts.join('='),
-            domain: '.vinted.de',
-            path: '/',
-          };
-        })
-      );
-    }
-
-    const page = await context.newPage();
     const url =
       'https://www.vinted.de/catalog?search_text=ralph+lauren&price_to=50&order=newest_first';
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
@@ -139,13 +168,16 @@ async function testBrowser() {
   } catch (err) {
     console.log('Browser error:', err.message);
   } finally {
-    await browser?.close().catch(() => undefined);
+    await page.close().catch(() => undefined);
   }
 }
 
 (async () => {
-  console.log('Testing API...');
+  console.log('Testing API with guest handshake...');
   await testApi();
   console.log('\nTesting Browser...');
   await testBrowser();
+  if (sharedBrowser) {
+    await sharedBrowser.close().catch(() => undefined);
+  }
 })();
