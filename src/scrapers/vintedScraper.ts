@@ -8,6 +8,60 @@ import type { AntiBotConfig, ScrapedItem } from '../types/index.js';
 const BASE_URL = 'https://www.vinted.de';
 const API_BASE = 'https://www.vinted.de/api/v2';
 
+interface GuestCookies {
+  cookieHeader: string;
+  csrfToken?: string;
+}
+
+async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
+  const proxy = getVintedProxyAgent();
+  const userAgent = antiBot.rotateUserAgents ? getRandomUserAgent() : undefined;
+
+  await randomDelay(1000, 2500);
+
+  try {
+    const response = await axios.get(BASE_URL, {
+      headers: {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
+        'User-Agent': userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Upgrade-Insecure-Requests': '1',
+      },
+      timeout: 20000,
+      proxy,
+      withCredentials: true,
+    });
+
+    const rawCookies = response.headers['set-cookie'] || [];
+    const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance'];
+    const cookiePairs: string[] = [];
+
+    for (const setCookie of rawCookies) {
+      const firstPart = setCookie.split(';')[0].trim();
+      if (!firstPart) continue;
+      const [name] = firstPart.split('=');
+      if (wantedNames.includes(name)) {
+        cookiePairs.push(firstPart);
+      }
+    }
+
+    const cookieHeader = cookiePairs.join('; ');
+    if (!cookieHeader.includes('_vinted_fr_session')) {
+      log('warn', 'Guest handshake did not return _vinted_fr_session');
+      return null;
+    }
+
+    const csrfMatch = typeof response.data === 'string' ? response.data.match(/name="csrf-token" content="([^"]+)"/) : null;
+    const csrfToken = csrfMatch ? csrfMatch[1] : undefined;
+
+    log('info', 'Guest handshake successful', { cookieCount: cookiePairs.length, hasCsrf: !!csrfToken });
+    return { cookieHeader, csrfToken };
+  } catch (error) {
+    log('warn', 'Guest handshake failed', { error: String(error) });
+    return null;
+  }
+}
+
 function getVintedProxyAgent(): { protocol: string; host: string; port: number; auth?: { username: string; password: string } } | undefined {
   const proxyUrl = process.env.VINTED_PROXY_URL;
   if (!proxyUrl) return undefined;
@@ -103,13 +157,18 @@ function mapApiItem(item: VintedApiItem): ScrapedItem {
 async function fetchVintedApi(
   keywords: string[],
   maxPrice: number,
-  antiBot: AntiBotConfig,
-  cookie?: string
+  antiBot: AntiBotConfig
 ): Promise<VintedApiItem[]> {
   const url = buildCatalogApiUrl(keywords, maxPrice);
   const userAgent = antiBot.rotateUserAgents ? getRandomUserAgent() : undefined;
 
   await randomDelay(antiBot.minDelayMs, antiBot.maxDelayMs);
+
+  const guest = await fetchGuestCookies(antiBot);
+  if (!guest) {
+    log('warn', 'Cannot fetch Vinted API without guest cookies');
+    return [];
+  }
 
   try {
     const headers: Record<string, string> = {
@@ -117,10 +176,10 @@ async function fetchVintedApi(
       'Accept-Language': 'de-DE,de;q=0.9,en;q=0.8',
       'User-Agent': userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       Referer: `${BASE_URL}/catalog?search_text=${encodeURIComponent(keywords.join(' '))}`,
+      Cookie: guest.cookieHeader,
+      'X-CSRF-Token': guest.csrfToken || '',
+      'X-Requested-With': 'XMLHttpRequest',
     };
-    if (cookie) {
-      headers.Cookie = cookie;
-    }
 
     const proxy = getVintedProxyAgent();
     const response = await axios.get(url, { headers, timeout: 20000, proxy });
@@ -231,8 +290,7 @@ export async function searchVintedStream(
   maxPrice: number,
   antiBot: AntiBotConfig
 ): Promise<ScrapedItem[]> {
-  const cookie = process.env.VINTED_SESSION_COOKIE;
-  const apiItems = await fetchVintedApi(keywords, maxPrice, antiBot, cookie);
+  const apiItems = await fetchVintedApi(keywords, maxPrice, antiBot);
 
   if (apiItems.length > 0) {
     const items = apiItems
@@ -253,8 +311,7 @@ export async function searchVinted(
 ): Promise<ScrapedItem[]> {
   log('info', `Starting Vinted search`, { keywords, maxPrice });
 
-  const cookie = process.env.VINTED_SESSION_COOKIE;
-  const apiItems = await fetchVintedApi(keywords, maxPrice, antiBot, cookie);
+  const apiItems = await fetchVintedApi(keywords, maxPrice, antiBot);
   await humanizedDelay(1500);
 
   let items: ScrapedItem[] = [];
