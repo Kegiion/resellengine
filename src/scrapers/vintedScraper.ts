@@ -13,7 +13,11 @@ let sharedBrowser: Browser | null = null;
 let sharedContext: BrowserContext | null = null;
 let sharedCookieHeader: string | null = null;
 let sharedCookieTimestamp = 0;
+let sharedAccessToken: string | null = null;
+let sharedCsrfToken: string | null = null;
 let sharedProxyKey: string | null = null;
+let pendingHandshake: Promise<GuestCookies | null> | null = null;
+let handshakeFailures = 0;
 
 function getVintedProxyAgent(): { protocol: string; host: string; port: number; auth?: { username: string; password: string } } | undefined {
   const proxyUrl = process.env.VINTED_PROXY_URL;
@@ -88,16 +92,13 @@ interface GuestCookies {
   accessToken?: string;
 }
 
-async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
+async function runGuestHandshake(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
   const proxy = getVintedProxyAgent();
   const userAgent = antiBot.rotateUserAgents ? getRandomUserAgent() : undefined;
   const now = Date.now();
 
-  if (sharedCookieHeader && now - sharedCookieTimestamp < COOKIE_REFRESH_MS) {
-    return { cookieHeader: sharedCookieHeader };
-  }
-
-  await randomDelay(1000, 2500);
+  const backoffMs = Math.min(30_000, handshakeFailures * 5_000);
+  await randomDelay(1000 + backoffMs, 2500 + backoffMs);
 
   try {
     const context = await ensureSharedContext(proxy, userAgent);
@@ -116,6 +117,8 @@ async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies |
     if (!cookieHeader.includes('_vinted_fr_session')) {
       log('warn', 'Guest handshake did not return _vinted_fr_session', { allCookies: allNames });
       await page.close().catch(() => undefined);
+      await context.clearCookies();
+      handshakeFailures = Math.min(5, handshakeFailures + 1);
       return null;
     }
 
@@ -123,6 +126,8 @@ async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies |
     if (!accessToken) {
       log('warn', 'Guest handshake did not return access_token_web', { allCookies: allNames });
       await page.close().catch(() => undefined);
+      await context.clearCookies();
+      handshakeFailures = Math.min(5, handshakeFailures + 1);
       return null;
     }
 
@@ -135,15 +140,46 @@ async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies |
 
     sharedCookieHeader = cookieHeader;
     sharedCookieTimestamp = now;
+    sharedAccessToken = accessToken;
+    sharedCsrfToken = csrfToken || null;
+    handshakeFailures = 0;
 
     log('info', 'Guest handshake successful', { cookieCount: cookiePairs.length, hasCsrf: !!csrfToken, hasAccessToken: true });
     return { cookieHeader, csrfToken, accessToken };
   } catch (error) {
     log('warn', 'Guest handshake failed', { error: String(error) });
     sharedCookieHeader = null;
-    sharedCookieTimestamp = 0;
+    sharedCookieTimestamp = now;
+    sharedAccessToken = null;
+    sharedCsrfToken = null;
+    handshakeFailures = Math.min(5, handshakeFailures + 1);
+    if (sharedContext) {
+      await sharedContext.close().catch(() => undefined);
+      sharedContext = null;
+    }
     return null;
   }
+}
+
+async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
+  const now = Date.now();
+  if (sharedCookieHeader && sharedAccessToken && now - sharedCookieTimestamp < COOKIE_REFRESH_MS) {
+    return { cookieHeader: sharedCookieHeader, accessToken: sharedAccessToken, csrfToken: sharedCsrfToken || undefined };
+  }
+
+  if (pendingHandshake) {
+    return pendingHandshake;
+  }
+
+  if (handshakeFailures > 0 && now - sharedCookieTimestamp < 60_000) {
+    log('warn', 'Guest handshake skipped due to recent failure', { handshakeFailures });
+    return null;
+  }
+
+  pendingHandshake = runGuestHandshake(antiBot).finally(() => {
+    pendingHandshake = null;
+  });
+  return pendingHandshake;
 }
 
 export async function closeVintedBrowser(): Promise<void> {
@@ -157,6 +193,8 @@ export async function closeVintedBrowser(): Promise<void> {
   }
   sharedCookieHeader = null;
   sharedCookieTimestamp = 0;
+  sharedAccessToken = null;
+  sharedCsrfToken = null;
   sharedProxyKey = null;
 }
 
