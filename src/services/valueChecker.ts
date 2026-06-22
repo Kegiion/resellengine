@@ -1,6 +1,7 @@
 import { log } from '../utils/logger.js';
 import { lookupSoldPrice } from './ebayValueLookup.js';
 import { analyzeProductImage } from './geminiService.js';
+import { analyzeImageAuthenticity } from './imageAnalysisService.js';
 import { sendFilterLogNotification } from './notificationGateway.js';
 import { incrementEbayChecked, incrementProfitFiltered, incrementImageAnalysis } from './stats.js';
 import type { AppConfig, ScrapedItem, VerifiedDeal } from '../types/index.js';
@@ -36,13 +37,35 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
   // Stufe 1: Lokale Text- und Spam-Filter sind bereits im Worker (isSpamTagged) gelaufen.
   // Wir landen hier nur, wenn der Artikel die Text-/Spam-Filter passiert hat.
 
-  // Stufe 2: eBay-Lookup (geringe Kosten).
+  // Stufe 2: eBay-Lookup (geringe Kosten) + Bild-Authentizitätsanalyse via BluesMinds.
   let estimatedResellValue = await estimateResellValue(item, config);
   if (estimatedResellValue === null) {
     const reason = 'Keine eBay-Verkaufspreise gefunden (weniger als 3 passende Listings).';
     log('info', `Deal verworfen in Stufe 2: ${reason}`, { itemId: item.id });
     await sendFilterLogNotification(item, 2, reason);
     return null;
+  }
+
+  if (item.imageUrl) {
+    incrementImageAnalysis();
+    const authenticity = await analyzeImageAuthenticity(item.imageUrl, item.title);
+    if (authenticity.success && authenticity.result) {
+      const { isAuthentic, confidence, reason } = authenticity.result;
+      if (!isAuthentic || confidence < 70) {
+        const rejectionReason = `Bildanalyse (BluesMinds) vermutet Fälschung oder Unsicherheit: ${reason} (confidence: ${confidence}).`;
+        log('info', `Deal verworfen in Stufe 2: ${rejectionReason}`, { itemId: item.id });
+        await sendFilterLogNotification(item, 2, rejectionReason);
+        return null;
+      }
+      log('info', 'BluesMinds authenticity check passed', { itemId: item.id, confidence, reason });
+    } else {
+      log('warn', 'BluesMinds authenticity check failed; continuing without image analysis', {
+        itemId: item.id,
+        error: authenticity.error,
+      });
+    }
+  } else {
+    log('info', 'No image URL available; skipping BluesMinds authenticity check', { itemId: item.id });
   }
 
   // Stufe 3: ROI-Berechnung mit harter 25-Euro-Huerde fuer Bildanalyse.
