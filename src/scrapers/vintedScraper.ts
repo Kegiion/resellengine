@@ -33,9 +33,9 @@ async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies |
     await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
     await page.waitForTimeout(2000 + Math.random() * 2000);
 
-    const cookies = await context.cookies(BASE_URL);
+    const allCookies = await context.cookies();
     const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance', 'datadome'];
-    const cookiePairs = cookies
+    const cookiePairs = allCookies
       .filter((c) => wantedNames.includes(c.name))
       .map((c) => `${c.name}=${c.value}`);
 
