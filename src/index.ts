@@ -20,6 +20,7 @@ import {
   loadGeminiApiKeyFromConfig,
 } from './services/geminiService.js';
 import { startRealtimeWorker, getWorkerStats } from './services/realtimeWorker.js';
+import { startScheduler } from './services/scheduler.js';
 import { runHealthChecks } from './services/healthChecks.js';
 import type { VerifiedDeal } from './types/index.js';
 
@@ -297,6 +298,7 @@ async function main() {
   });
 
   startRealtimeWorker(client);
+  startScheduler(client, { intervalMs: 180_000 });
 }
 
 main().catch((error) => {
