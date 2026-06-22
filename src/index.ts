@@ -305,7 +305,7 @@ async function main() {
 
   try {
     const config = await getFullConfig(client);
-    startVintedSniper(client, config);
+    await startVintedSniper(client, config);
   } catch (error) {
     log('error', 'Failed to load config for sniper', { error: String(error) });
   }

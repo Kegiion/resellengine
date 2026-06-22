@@ -1,4 +1,4 @@
-import { searchVintedStream } from '../scrapers/vintedScraper.js';
+import { searchVintedStream, fetchGuestCookiesOnce } from '../scrapers/vintedScraper.js';
 import { verifyDeal } from './valueChecker.js';
 import { insertDeal } from './database.js';
 import { sendDealNotification } from './notificationGateway.js';
@@ -76,10 +76,10 @@ async function runSniperLoop(
   }
 }
 
-export function startVintedSniper(
+export async function startVintedSniper(
   client: SupabaseClient,
   config: AppConfig
-): void {
+): Promise<void> {
   const enabled = process.env.SNIPER_ENABLED !== 'false';
   if (!enabled) {
     log('info', 'Vinted sniper disabled');
@@ -93,6 +93,18 @@ export function startVintedSniper(
   }
 
   log('info', 'Starting Vinted real-time sniper', { jobs: vintedJobs.length });
+
+  try {
+    const guest = await fetchGuestCookiesOnce(config.antiBot);
+    if (!guest) {
+      log('warn', 'Vinted sniper could not warm up guest cookies; aborting start');
+      return;
+    }
+    log('info', 'Vinted sniper guest cookies warmed up');
+  } catch (error) {
+    log('error', 'Vinted sniper warmup failed', { error: String(error) });
+    return;
+  }
 
   for (const job of vintedJobs) {
     const controller = new AbortController();

@@ -19,6 +19,35 @@ let sharedProxyKey: string | null = null;
 let pendingHandshake: Promise<GuestCookies | null> | null = null;
 let handshakeFailures = 0;
 
+let handshakeMutexLocked = false;
+const handshakeMutexQueue: Array<() => void> = [];
+
+async function acquireHandshakeMutex(): Promise<void> {
+  if (!handshakeMutexLocked) {
+    handshakeMutexLocked = true;
+    return;
+  }
+  await new Promise<void>((resolve) => handshakeMutexQueue.push(resolve));
+}
+
+function releaseHandshakeMutex(): void {
+  const next = handshakeMutexQueue.shift();
+  if (next) {
+    next();
+  } else {
+    handshakeMutexLocked = false;
+  }
+}
+
+async function withHandshakeMutex<T>(fn: () => Promise<T>): Promise<T> {
+  await acquireHandshakeMutex();
+  try {
+    return await fn();
+  } finally {
+    releaseHandshakeMutex();
+  }
+}
+
 function getVintedProxyAgent(): { protocol: string; host: string; port: number; auth?: { username: string; password: string } } | undefined {
   const proxyUrl = process.env.VINTED_PROXY_URL;
   if (!proxyUrl) return undefined;
@@ -59,7 +88,9 @@ function buildContextProxy(
 
 async function ensureSharedBrowser(): Promise<Browser> {
   if (sharedBrowser) return sharedBrowser;
-  sharedBrowser = await chromium.launch({ headless: true });
+  const executablePath = chromium.executablePath();
+  log('info', 'Launching Chromium', { executablePath });
+  sharedBrowser = await chromium.launch({ headless: true, executablePath });
   return sharedBrowser;
 }
 
@@ -92,6 +123,52 @@ interface GuestCookies {
   accessToken?: string;
 }
 
+async function pollGuestCookies(context: BrowserContext, maxTotalMs = 60_000, activityTimeoutMs = 15_000): Promise<{ allCookies: Array<{ name: string; value: string }>; csrfToken?: string } | null> {
+  const start = Date.now();
+  let lastAllNames = '';
+  let lastActivity = Date.now();
+
+  while (Date.now() - start < maxTotalMs) {
+    const allCookies = await context.cookies();
+    const allNames = allCookies.map((c: { name: string }) => c.name).join(', ');
+
+    if (allNames !== lastAllNames) {
+      lastAllNames = allNames;
+      lastActivity = Date.now();
+      log('info', 'Polling guest cookies', { allCookies: allNames });
+    }
+
+    const sessionCookie = allCookies.find((c: { name: string }) => c.name === '_vinted_fr_session');
+    const accessToken = allCookies.find((c: { name: string }) => c.name === 'access_token_web')?.value;
+
+    if (sessionCookie && accessToken) {
+      return { allCookies };
+    }
+
+    if (Date.now() - lastActivity > activityTimeoutMs) {
+      log('warn', 'Guest cookie polling stopped: no new cookies for 15s', { allCookies: lastAllNames });
+      return null;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+
+  log('warn', 'Guest cookie polling timed out', { allCookies: lastAllNames });
+  return null;
+}
+
+async function resetSharedBrowser(): Promise<void> {
+  if (sharedContext) {
+    await sharedContext.close().catch(() => undefined);
+    sharedContext = null;
+  }
+  if (sharedBrowser) {
+    await sharedBrowser.close().catch(() => undefined);
+    sharedBrowser = null;
+  }
+  sharedProxyKey = null;
+}
+
 async function runGuestHandshake(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
   const proxy = getVintedProxyAgent();
   const userAgent = antiBot.rotateUserAgents ? getRandomUserAgent() : undefined;
@@ -100,68 +177,72 @@ async function runGuestHandshake(antiBot: AntiBotConfig): Promise<GuestCookies |
   const backoffMs = Math.min(30_000, handshakeFailures * 5_000);
   await randomDelay(1000 + backoffMs, 2500 + backoffMs);
 
-  try {
-    const context = await ensureSharedContext(proxy, userAgent);
-    const page = await context.newPage();
-    await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
-    await page.waitForTimeout(4000 + Math.random() * 3000);
+  return withHandshakeMutex(async () => {
+    const cachedNow = Date.now();
+    if (sharedCookieHeader && sharedAccessToken && cachedNow - sharedCookieTimestamp < COOKIE_REFRESH_MS) {
+      return { cookieHeader: sharedCookieHeader, accessToken: sharedAccessToken, csrfToken: sharedCsrfToken || undefined };
+    }
 
-    const allCookies = await context.cookies();
-    const allNames = allCookies.map((c: { name: string }) => c.name).join(', ');
-    const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance', 'datadome', 'access_token_web'];
-    const cookiePairs = allCookies
-      .filter((c: { name: string }) => wantedNames.includes(c.name))
-      .map((c: { name: string; value: string }) => `${c.name}=${c.value}`);
+    try {
+      const context = await ensureSharedContext(proxy, userAgent);
+      const page = await context.newPage();
 
-    const cookieHeader = cookiePairs.join('; ');
-    if (!cookieHeader.includes('_vinted_fr_session')) {
-      log('warn', 'Guest handshake did not return _vinted_fr_session', { allCookies: allNames });
+      await page.goto(BASE_URL, { waitUntil: 'networkidle', timeout: 60000 });
+
+      const cookieResult = await pollGuestCookies(context, 60_000);
+      if (!cookieResult) {
+        await page.close().catch(() => undefined);
+        await resetSharedBrowser();
+        handshakeFailures = Math.min(5, handshakeFailures + 1);
+        return null;
+      }
+
+      const allCookies = cookieResult.allCookies;
+      const allNames = allCookies.map((c: { name: string }) => c.name).join(', ');
+      const wantedNames = ['_vinted_fr_session', 'anon_id', 'anonymous-locale', 'anonymous-iso-locale', 'cf_clearance', 'datadome', 'access_token_web'];
+      const cookiePairs = allCookies
+        .filter((c: { name: string }) => wantedNames.includes(c.name))
+        .map((c: { name: string; value: string }) => `${c.name}=${c.value}`);
+      const cookieHeader = cookiePairs.join('; ');
+
+      const accessToken = allCookies.find((c: { name: string; value: string }) => c.name === 'access_token_web')?.value;
+      if (!accessToken) {
+        log('warn', 'Guest handshake did not return access_token_web', { allCookies: allNames });
+        await page.close().catch(() => undefined);
+        await resetSharedBrowser();
+        handshakeFailures = Math.min(5, handshakeFailures + 1);
+        return null;
+      }
+
+      const csrfToken = await page.evaluate(() => {
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        return meta?.getAttribute('content') || undefined;
+      });
+
       await page.close().catch(() => undefined);
-      await context.clearCookies();
+
+      sharedCookieHeader = cookieHeader;
+      sharedCookieTimestamp = cachedNow;
+      sharedAccessToken = accessToken;
+      sharedCsrfToken = csrfToken || null;
+      handshakeFailures = 0;
+
+      log('info', 'Guest handshake successful', { cookieCount: cookiePairs.length, hasCsrf: !!csrfToken, hasAccessToken: true });
+      return { cookieHeader, csrfToken, accessToken };
+    } catch (error) {
+      log('warn', 'Guest handshake failed', { error: String(error) });
+      sharedCookieHeader = null;
+      sharedCookieTimestamp = cachedNow;
+      sharedAccessToken = null;
+      sharedCsrfToken = null;
       handshakeFailures = Math.min(5, handshakeFailures + 1);
+      await resetSharedBrowser();
       return null;
     }
-
-    const accessToken = allCookies.find((c: { name: string; value: string }) => c.name === 'access_token_web')?.value;
-    if (!accessToken) {
-      log('warn', 'Guest handshake did not return access_token_web', { allCookies: allNames });
-      await page.close().catch(() => undefined);
-      await context.clearCookies();
-      handshakeFailures = Math.min(5, handshakeFailures + 1);
-      return null;
-    }
-
-    const csrfToken = await page.evaluate(() => {
-      const meta = document.querySelector('meta[name="csrf-token"]');
-      return meta?.getAttribute('content') || undefined;
-    });
-
-    await page.close().catch(() => undefined);
-
-    sharedCookieHeader = cookieHeader;
-    sharedCookieTimestamp = now;
-    sharedAccessToken = accessToken;
-    sharedCsrfToken = csrfToken || null;
-    handshakeFailures = 0;
-
-    log('info', 'Guest handshake successful', { cookieCount: cookiePairs.length, hasCsrf: !!csrfToken, hasAccessToken: true });
-    return { cookieHeader, csrfToken, accessToken };
-  } catch (error) {
-    log('warn', 'Guest handshake failed', { error: String(error) });
-    sharedCookieHeader = null;
-    sharedCookieTimestamp = now;
-    sharedAccessToken = null;
-    sharedCsrfToken = null;
-    handshakeFailures = Math.min(5, handshakeFailures + 1);
-    if (sharedContext) {
-      await sharedContext.close().catch(() => undefined);
-      sharedContext = null;
-    }
-    return null;
-  }
+  });
 }
 
-async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
+export async function fetchGuestCookiesOnce(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
   const now = Date.now();
   if (sharedCookieHeader && sharedAccessToken && now - sharedCookieTimestamp < COOKIE_REFRESH_MS) {
     return { cookieHeader: sharedCookieHeader, accessToken: sharedAccessToken, csrfToken: sharedCsrfToken || undefined };
@@ -180,6 +261,10 @@ async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies |
     pendingHandshake = null;
   });
   return pendingHandshake;
+}
+
+async function fetchGuestCookies(antiBot: AntiBotConfig): Promise<GuestCookies | null> {
+  return fetchGuestCookiesOnce(antiBot);
 }
 
 export async function closeVintedBrowser(): Promise<void> {
