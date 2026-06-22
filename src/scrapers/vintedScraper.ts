@@ -3,6 +3,7 @@ import { chromium, Browser, BrowserContext } from 'playwright';
 import { randomDelay, humanizedDelay } from '../utils/delay.js';
 import { log } from '../utils/logger.js';
 import { getRandomUserAgent } from '../utils/userAgents.js';
+import { updateLastHandshakeAt } from '../services/discordState.js';
 import type { AntiBotConfig, ScrapedItem } from '../types/index.js';
 
 const BASE_URL = 'https://www.vinted.de';

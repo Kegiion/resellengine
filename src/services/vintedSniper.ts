@@ -4,6 +4,7 @@ import { insertDeal } from './database.js';
 import { sendDealNotification } from './notificationGateway.js';
 import { humanizedDelay } from '../utils/delay.js';
 import { log } from '../utils/logger.js';
+import { isSniperRunning } from './discordState.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AppConfig, SearchJob, ScrapedItem } from '../types/index.js';
 
@@ -59,6 +60,11 @@ async function runSniperLoop(
   signal: AbortSignal
 ): Promise<void> {
   while (!signal.aborted) {
+    if (!isSniperRunning()) {
+      await humanizedDelay(SNIPER_LOOP_MIN_MS, SNIPER_LOOP_MAX_MS);
+      continue;
+    }
+
     try {
       log('info', 'Sniper loop tick', { jobId: job.id, keywords: job.keywords });
       const items = await searchVintedStream(job.keywords, job.maxPrice, config.antiBot);
