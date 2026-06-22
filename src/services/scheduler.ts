@@ -2,6 +2,7 @@ import { searchVinted } from '../scrapers/vintedScraper.js';
 import { searchKleinanzeigen } from '../scrapers/kleinanzeigenScraper.js';
 import { verifyDeals } from './valueChecker.js';
 import { insertDeal, getFullConfig } from './database.js';
+import { sendDealNotification } from './notificationGateway.js';
 import { randomDelay } from '../utils/delay.js';
 import { log } from '../utils/logger.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -37,6 +38,7 @@ export async function runScraperJob(
     log('info', 'Verified deals', { jobId: job.id, count: verifiedDeals.length });
 
     for (const deal of verifiedDeals) {
+      await sendDealNotification(deal);
       await insertDeal(client, deal);
     }
   } catch (err) {

@@ -1,6 +1,7 @@
 import { log } from '../utils/logger.js';
 import { lookupSoldPrice } from './ebayValueLookup.js';
 import { analyzeProductImage } from './geminiService.js';
+import { sendFilterLogNotification } from './notificationGateway.js';
 import { incrementEbayChecked, incrementProfitFiltered, incrementImageAnalysis } from './stats.js';
 import type { AppConfig, ScrapedItem, VerifiedDeal } from '../types/index.js';
 
@@ -38,7 +39,9 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
   // Stufe 2: eBay-Lookup (geringe Kosten).
   let estimatedResellValue = await estimateResellValue(item, config);
   if (estimatedResellValue === null) {
-    log('info', 'Deal verworfen in Stufe 2: Keine eBay-Daten verfuegbar.', { itemId: item.id });
+    const reason = 'Keine eBay-Verkaufspreise gefunden (weniger als 3 passende Listings).';
+    log('info', `Deal verworfen in Stufe 2: ${reason}`, { itemId: item.id });
+    await sendFilterLogNotification(item, 2, reason);
     return null;
   }
 
@@ -49,11 +52,9 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
 
   if (netProfitBeforeImage < IMAGE_ANALYSIS_PROFIT_GATE) {
     incrementProfitFiltered();
-    log('info', 'Deal verworfen in Stufe 3: Profit zu gering. Keine Bildanalyse gestartet.', {
-      itemId: item.id,
-      netProfitBeforeImage,
-      gate: IMAGE_ANALYSIS_PROFIT_GATE,
-    });
+    const reason = `Profit zu gering für Bildanalyse. Netto-Profit vor Bildanalyse: ${netProfitBeforeImage.toFixed(2)} €, benötigt: ${IMAGE_ANALYSIS_PROFIT_GATE} €.`;
+    log('info', `Deal verworfen in Stufe 3: ${reason}`, { itemId: item.id });
+    await sendFilterLogNotification(item, 3, reason);
     return null;
   }
 
@@ -65,6 +66,7 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
       const { isDamaged, flaws, confidence } = analysis.result;
       if (isDamaged) {
         const reducedValue = Math.round(estimatedResellValue * 0.3 * 100) / 100;
+        const reason = `Bildanalyse erkannte Mängel (${flaws || 'nicht spezifiziert'}). Wiederverkaufswert um 70% reduziert auf ${reducedValue.toFixed(2)} €.`;
         log('info', 'Image damage detected; reducing resell value by 70%', {
           itemId: item.id,
           originalValue: estimatedResellValue,
@@ -73,6 +75,7 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
           confidence,
         });
         estimatedResellValue = reducedValue;
+        await sendFilterLogNotification(item, 4, reason);
       } else {
         log('info', 'Image analysis found no visible damage', { itemId: item.id, confidence });
       }
@@ -95,11 +98,9 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
 
   if (netProfit < minDesiredProfit) {
     incrementProfitFiltered();
-    log('info', 'Deal below profit threshold', {
-      itemId: item.id,
-      netProfit,
-      threshold: minDesiredProfit,
-    });
+    const reason = `Netto-Profit ${netProfit.toFixed(2)} € liegt unter dem Mindest-Profit von ${minDesiredProfit.toFixed(2)} €.`;
+    log('info', `Deal verworfen in Stufe 5: ${reason}`, { itemId: item.id });
+    await sendFilterLogNotification(item, 5, reason);
     return null;
   }
 
