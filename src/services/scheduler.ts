@@ -4,6 +4,7 @@ import { verifyDeals } from './valueChecker.js';
 import { insertDeal, getFullConfig } from './database.js';
 import { sendDealNotification } from './notificationGateway.js';
 import { randomDelay } from '../utils/delay.js';
+import { isFreshItem } from '../utils/isFreshItem.js';
 import { log } from '../utils/logger.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AppConfig, SearchJob } from '../types/index.js';
@@ -26,15 +27,21 @@ export async function runScraperJob(
     return;
   }
 
+  if (job.platform === 'vinted') {
+    log('info', 'Scheduler skipped Vinted job; real-time sniper handles Vinted', { jobId: job.id });
+    return;
+  }
+
   try {
     log('info', 'Running scheduler job', { jobId: job.id, platform: job.platform });
 
-    const items =
-      job.platform === 'vinted'
-        ? await searchVinted(job.keywords, job.maxPrice, config.antiBot)
-        : await searchKleinanzeigen(job.keywords, job.maxPrice, config.antiBot);
+    const items = await searchKleinanzeigen(job.keywords, job.maxPrice, config.antiBot);
+    const freshItems = items.filter(isFreshItem);
+    if (freshItems.length < items.length) {
+      log('info', 'Scheduler discarded old items', { jobId: job.id, total: items.length, fresh: freshItems.length });
+    }
 
-    const verifiedDeals = await verifyDeals(items, config);
+    const verifiedDeals = await verifyDeals(freshItems, config);
     log('info', 'Verified deals', { jobId: job.id, count: verifiedDeals.length });
 
     for (const deal of verifiedDeals) {

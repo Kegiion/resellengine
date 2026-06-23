@@ -3,6 +3,7 @@ import { verifyDeal } from './valueChecker.js';
 import { insertDeal, getFullConfig } from './database.js';
 import { sendDealNotification } from './notificationGateway.js';
 import { randomDelay } from '../utils/delay.js';
+import { isFreshItem } from '../utils/isFreshItem.js';
 import { log } from '../utils/logger.js';
 import { incrementScanned, incrementSpamFiltered, incrementAlarm, getStats, resetStats } from './stats.js';
 import type { PipelineStats } from './stats.js';
@@ -122,6 +123,10 @@ export async function runRealtimeWorker(client: SupabaseClient): Promise<void> {
 
         for (const job of jobs) {
           if (!job.enabled || job.keywords.length === 0) continue;
+          if (job.platform !== 'vinted') {
+            log('info', 'Realtime worker skipped non-Vinted job; scheduler handles it', { jobId: job.id });
+            continue;
+          }
 
           const items = await searchVinted(job.keywords, job.maxPrice, config.antiBot);
           for (const _ of items) {
@@ -142,6 +147,10 @@ export async function runRealtimeWorker(client: SupabaseClient): Promise<void> {
 
             for (const item of newItems) {
               if (isSpamTagged(item)) continue;
+              if (!isFreshItem(item)) {
+                log('info', 'Realtime worker discarded item: too old', { itemId: item.id, ageMs: Date.now() - new Date(item.listedAt || item.scrapedAt).getTime() });
+                continue;
+              }
               await handleNewItem(item, config, client);
             }
           }

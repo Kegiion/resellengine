@@ -3,28 +3,17 @@ import { verifyDeal } from './valueChecker.js';
 import { insertDeal } from './database.js';
 import { sendDealNotification } from './notificationGateway.js';
 import { humanizedDelay } from '../utils/delay.js';
+import { isFreshItem } from '../utils/isFreshItem.js';
 import { log } from '../utils/logger.js';
 import { isSniperRunning } from './discordState.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AppConfig, SearchJob, ScrapedItem } from '../types/index.js';
 
-const MAX_ITEM_AGE_MS = 120_000;
 const SNIPER_LOOP_MIN_MS = 12_000;
 const SNIPER_LOOP_MAX_MS = 22_000;
 
 const seenItemIds = new Set<string>();
 const sniperAbortControllers = new Map<string, AbortController>();
-
-function isFreshItem(item: ScrapedItem): boolean {
-  const now = Date.now();
-  const itemTimestamp = item.listedAt
-    ? new Date(item.listedAt).getTime()
-    : item.scrapedAt
-    ? new Date(item.scrapedAt).getTime()
-    : now;
-  const ageMs = now - itemTimestamp;
-  return ageMs <= MAX_ITEM_AGE_MS;
-}
 
 async function processItem(
   item: ScrapedItem,
