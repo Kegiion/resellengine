@@ -1,16 +1,20 @@
 import axios from 'axios';
-import { chromium, Browser, BrowserContext } from 'playwright';
+import { Browser, BrowserContext } from 'playwright';
+import { chromium } from 'playwright-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { randomDelay, humanizedDelay } from '../utils/delay.js';
 import { log } from '../utils/logger.js';
 import { getRandomUserAgent } from '../utils/userAgents.js';
 import { updateLastHandshakeAt } from '../services/discordState.js';
 import type { AntiBotConfig, ScrapedItem } from '../types/index.js';
 
+chromium.use(StealthPlugin());
+
 const BASE_URL = 'https://www.vinted.de';
 const API_BASE = 'https://www.vinted.de/api/v2';
 const COOKIE_REFRESH_MS = 10 * 60 * 1000;
 
-let sharedBrowser: Browser | null = null;
+let sharedBrowser: Browser | null | any = null;
 let sharedContext: BrowserContext | null = null;
 let sharedCookieHeader: string | null = null;
 let sharedCookieTimestamp = 0;
@@ -87,11 +91,31 @@ function buildContextProxy(
   };
 }
 
+function getDesktopUserAgent(): string {
+  return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+}
+
 async function ensureSharedBrowser(): Promise<Browser> {
   if (sharedBrowser) return sharedBrowser;
   const executablePath = chromium.executablePath();
-  log('info', 'Launching Chromium', { executablePath });
-  sharedBrowser = await chromium.launch({ headless: true, executablePath });
+  log('info', 'Launching Chromium with stealth flags', { executablePath });
+  sharedBrowser = await chromium.launch({
+    headless: true,
+    executablePath,
+    args: [
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-site-isolation-trials',
+      '--use-fake-ui-for-media-stream',
+      '--use-fake-device-for-media-stream',
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
+      '--window-size=1440,900',
+    ],
+  });
   return sharedBrowser;
 }
 
@@ -109,9 +133,10 @@ async function ensureSharedContext(
 
   const browser = await ensureSharedBrowser();
   sharedContext = await browser.newContext({
-    userAgent: userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    userAgent: userAgent || getDesktopUserAgent(),
     viewport: { width: 1440, height: 900 },
     locale: 'de-DE',
+    timezoneId: 'Europe/Berlin',
     proxy: buildContextProxy(proxy),
   });
   sharedProxyKey = newKey;
