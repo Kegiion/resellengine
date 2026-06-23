@@ -117,10 +117,20 @@ function extractSoldPrices(html: string): number[] {
     if (price > 0.5 && price < 5000) prices.push(price);
   };
 
-  const text = $.text();
-  const regex = /\b\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s*[€]|\s*€\s*\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|EUR\s*\d{1,3}(?:[.,]\d{3})*[.,]\d{2}/gi;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) addPrice(match[0]);
+  const soldIndicators = ['verkauft', 'sold', 'beendet', 'ended', 'abgelaufen'];
+
+  $('.s-item').each((_, el) => {
+    const $el = $(el);
+    const itemText = $el.text().toLowerCase();
+    const isSold = soldIndicators.some((indicator) => itemText.includes(indicator));
+    if (!isSold) return;
+
+    const priceText = $el.find('.s-item__price').first().text().trim();
+    if (priceText) {
+      addPrice(priceText);
+    }
+  });
+
   return prices;
 }
 
