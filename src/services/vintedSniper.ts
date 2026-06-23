@@ -3,7 +3,7 @@ import { verifyDeal } from './valueChecker.js';
 import { insertDeal } from './database.js';
 import { sendDealNotification } from './notificationGateway.js';
 import { humanizedDelay } from '../utils/delay.js';
-import { isFreshItem } from '../utils/isFreshItem.js';
+import { isFreshItem, isFreshApiTimestamp } from '../utils/isFreshItem.js';
 import { log } from '../utils/logger.js';
 import { isSniperRunning } from './discordState.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -11,9 +11,32 @@ import type { AppConfig, SearchJob, ScrapedItem } from '../types/index.js';
 
 const SNIPER_LOOP_MIN_MS = 12_000;
 const SNIPER_LOOP_MAX_MS = 22_000;
+const MAX_FIRST_SEEN_CACHE = 5000;
+const FIRST_SEEN_MAX_AGE_MS = 120_000;
 
 const seenItemIds = new Set<string>();
+const firstSeenAt = new Map<string, number>();
 const sniperAbortControllers = new Map<string, AbortController>();
+
+function recordFirstSeen(item: ScrapedItem): void {
+  if (!firstSeenAt.has(item.id)) {
+    firstSeenAt.set(item.id, Date.now());
+    seenItemIds.add(item.id);
+  }
+  if (firstSeenAt.size > MAX_FIRST_SEEN_CACHE) {
+    const oldestKey = firstSeenAt.keys().next().value;
+    if (oldestKey) {
+      firstSeenAt.delete(oldestKey);
+      seenItemIds.delete(oldestKey);
+    }
+  }
+}
+
+function isFreshByFirstSeen(item: ScrapedItem): boolean {
+  const seenAt = firstSeenAt.get(item.id);
+  if (!seenAt) return true;
+  return Date.now() - seenAt <= FIRST_SEEN_MAX_AGE_MS;
+}
 
 async function processItem(
   item: ScrapedItem,
@@ -21,7 +44,8 @@ async function processItem(
   config: AppConfig,
   client: SupabaseClient
 ): Promise<void> {
-  if (!isFreshItem(item)) {
+  const isFresh = isFreshApiTimestamp(item) || (isFreshByFirstSeen(item) && isFreshItem(item));
+  if (!isFresh) {
     const ageMs = Date.now() - new Date(item.listedAt || item.scrapedAt).getTime();
     log('info', 'Sniper discarded item: too old', { itemId: item.id, ageMs });
     return;
@@ -30,7 +54,7 @@ async function processItem(
   if (seenItemIds.has(item.id)) {
     return;
   }
-  seenItemIds.add(item.id);
+  recordFirstSeen(item);
 
   const deal = await verifyDeal(item, config);
   if (!deal) {

@@ -38,11 +38,9 @@ function getProxyAgent() {
 
 async function ensureSharedBrowser(): Promise<{ browser: import("playwright").Browser; context: import("playwright").BrowserContext }> {
   const proxy = getProxyAgent();
-  if (!proxy) {
-    throw new Error("VINTED_PROXY_URL not set");
-  }
+  const proxyKey = proxy ? proxy.key : 'direct';
 
-  if (sharedBrowser && sharedContext && sharedProxyKey === proxy.key) {
+  if (sharedBrowser && sharedContext && sharedProxyKey === proxyKey) {
     return { browser: sharedBrowser, context: sharedContext };
   }
 
@@ -66,22 +64,26 @@ async function ensureSharedBrowser(): Promise<{ browser: import("playwright").Br
   });
   sharedBrowser = browser;
 
-  sharedContext = await browser.newContext({
-    proxy: {
-      server: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
-      username: proxy.auth?.username,
-      password: proxy.auth?.password,
-    },
+  const contextOptions: any = {
     locale: "de-DE",
     timezoneId: "Europe/Berlin",
     userAgent:
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-  });
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+  };
+  if (proxy) {
+    contextOptions.proxy = {
+      server: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
+      username: proxy.auth?.username,
+      password: proxy.auth?.password,
+    };
+  }
+
+  sharedContext = await browser.newContext(contextOptions);
 
   if (!sharedBrowser || !sharedContext) {
     throw new Error("Failed to launch eBay browser");
   }
-  sharedProxyKey = proxy.key;
+  sharedProxyKey = proxyKey;
   return { browser: sharedBrowser, context: sharedContext };
 }
 
@@ -118,14 +120,18 @@ function extractSoldPrices(html: string): number[] {
   };
 
   const soldIndicators = ['verkauft', 'sold', 'beendet', 'ended', 'abgelaufen'];
+  const promoIndicators = ['shop on ebay', 'or best offer', 'brand new'];
 
-  $('.s-item').each((_, el) => {
+  $('.s-card').each((_, el) => {
     const $el = $(el);
     const itemText = $el.text().toLowerCase();
     const isSold = soldIndicators.some((indicator) => itemText.includes(indicator));
     if (!isSold) return;
 
-    const priceText = $el.find('.s-item__price').first().text().trim();
+    const isPromo = promoIndicators.some((indicator) => itemText.includes(indicator));
+    if (isPromo) return;
+
+    const priceText = $el.find('.s-card__price').first().text().trim();
     if (priceText) {
       addPrice(priceText);
     }

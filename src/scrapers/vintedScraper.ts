@@ -329,6 +329,8 @@ interface VintedApiItem {
   full_size_url?: string;
   favourite_count?: number;
   view_count?: number;
+  promoted?: boolean;
+  content_source?: string;
 }
 
 function buildCatalogApiUrl(keywords: string[], maxPrice: number, page = 1): string {
@@ -424,7 +426,12 @@ async function fetchVintedApi(
     const response = await axios.get(url, { headers, timeout: 20000, proxy });
 
     const items = response.data?.items || [];
-    return items.filter((item: VintedApiItem) => item.is_visible !== false);
+    return items.filter((item: VintedApiItem) => {
+      if (item.is_visible === false) return false;
+      if (item.promoted) return false;
+      if (item.content_source === 'promoted') return false;
+      return true;
+    });
   } catch (error) {
     log('warn', 'Vinted API fetch failed', { error: String(error) });
     return [];
