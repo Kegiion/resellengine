@@ -1,4 +1,4 @@
-import axios from "axios";
+import OpenAI from "openai";
 import { log } from "../utils/logger.js";
 
 export interface AuthenticityResult {
@@ -7,58 +7,42 @@ export interface AuthenticityResult {
   reason: string;
 }
 
-interface OpenAIResponse {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
-}
-
 const SYSTEM_PROMPT =
   "Du bist ein Experte für Streetwear-Reselling und Fake-Erkennung. Analysiere das Bild des Artikels und die Beschreibung. Überprüfe: Sieht das Produkt original aus? Stimmen die Nähte/Tags grob überein? Antworte NUR in einem standardisierten JSON-Format: { isAuthentic: true/false, confidence: 0-100, reason: 'Deine Begründung auf Deutsch' }";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 export async function analyzeImageAuthenticity(
   imageUrl: string,
   description?: string
 ): Promise<{ success: boolean; result?: AuthenticityResult; error?: string }> {
-  const apiKey = process.env.OPENAI_API_KEY;
-
-  if (!apiKey) {
+  if (!process.env.OPENAI_API_KEY) {
     return { success: false, error: "OPENAI_API_KEY not configured" };
   }
 
   try {
-    const content = description
+    const textContent = description
       ? `Beschreibung: ${description}\n\nAnalysiere das Bild und bewerte Authentizität.`
       : "Analysiere das Bild und bewerte Authentizität.";
 
-    const response = await axios.post<OpenAIResponse>(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        model: "gpt-4o-mini",
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: content },
-              { type: "image_url", image_url: { url: imageUrl } },
-            ],
-          },
-        ],
-        max_tokens: 500,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: textContent },
+            { type: "image_url", image_url: { url: imageUrl } },
+          ],
         },
-        timeout: 60_000,
-      }
-    );
+      ],
+      max_tokens: 500,
+    });
 
-    const rawContent = response.data?.choices?.[0]?.message?.content?.trim() ?? "";
+    const rawContent = response.choices?.[0]?.message?.content?.trim() ?? "";
     if (!rawContent) {
       return { success: false, error: "Empty response from OpenAI" };
     }
@@ -75,7 +59,7 @@ export async function analyzeImageAuthenticity(
       reason: String(parsed.reason || "Keine Begründung geliefert."),
     };
 
-    log("info", "OpenAI image authenticity analysis", {
+    log("info", "OpenAI gpt-4o image authenticity analysis", {
       imageUrl,
       isAuthentic: result.isAuthentic,
       confidence: result.confidence,
@@ -83,10 +67,8 @@ export async function analyzeImageAuthenticity(
 
     return { success: true, result };
   } catch (error) {
-    const message = axios.isAxiosError(error)
-      ? `${error.message} (${error.response?.status ?? "no status"})`
-      : String(error);
-    log("warn", "OpenAI image authenticity analysis failed", { imageUrl, error: message });
+    const message = error instanceof Error ? error.message : String(error);
+    log("warn", "OpenAI gpt-4o image authenticity analysis failed", { imageUrl, error: message });
     return { success: false, error: message };
   }
 }
