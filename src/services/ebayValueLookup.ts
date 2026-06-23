@@ -1,16 +1,94 @@
-import axios from 'axios';
-import * as cheerio from 'cheerio';
-import { log } from '../utils/logger.js';
-import type { AntiBotConfig, ScrapedItem } from '../types/index.js';
+import { chromium } from "playwright-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
+import * as cheerio from "cheerio";
+import { log } from "../utils/logger.js";
+import { randomDelay } from "../utils/delay.js";
+import type { AntiBotConfig, ScrapedItem } from "../types/index.js";
 
-const EBAY_DE_URL = 'https://www.ebay.de/sch/i.html';
-const DECODO_API_URL = 'https://scraper-api.decodo.com/v2/scrape';
+chromium.use(StealthPlugin());
+
+const EBAY_DE_URL = "https://www.ebay.de/sch/i.html";
 const MAX_QUERY_LEN = 80;
+
+let sharedBrowser: import("playwright").Browser | null = null;
+let sharedContext: import("playwright").BrowserContext | null = null;
+let sharedProxyKey: string | null = null;
+
+function getProxyAgent() {
+  const proxyUrl = process.env.VINTED_PROXY_URL;
+  if (!proxyUrl) return undefined;
+  try {
+    const parsed = new URL(proxyUrl);
+    return {
+      protocol: parsed.protocol.replace(":", ""),
+      host: parsed.hostname,
+      port: Number(parsed.port),
+      auth: parsed.username
+        ? {
+            username: decodeURIComponent(parsed.username),
+            password: decodeURIComponent(parsed.password || ""),
+          }
+        : undefined,
+      key: proxyUrl,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function ensureSharedBrowser(): Promise<{ browser: import("playwright").Browser; context: import("playwright").BrowserContext }> {
+  const proxy = getProxyAgent();
+  if (!proxy) {
+    throw new Error("VINTED_PROXY_URL not set");
+  }
+
+  if (sharedBrowser && sharedContext && sharedProxyKey === proxy.key) {
+    return { browser: sharedBrowser, context: sharedContext };
+  }
+
+  if (sharedContext) {
+    await sharedContext.close().catch(() => {});
+    sharedContext = null;
+  }
+  if (sharedBrowser) {
+    await sharedBrowser.close().catch(() => {});
+    sharedBrowser = null;
+  }
+
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled",
+    ],
+  });
+  sharedBrowser = browser;
+
+  sharedContext = await browser.newContext({
+    proxy: {
+      server: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
+      username: proxy.auth?.username,
+      password: proxy.auth?.password,
+    },
+    locale: "de-DE",
+    timezoneId: "Europe/Berlin",
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  });
+
+  if (!sharedBrowser || !sharedContext) {
+    throw new Error("Failed to launch eBay browser");
+  }
+  sharedProxyKey = proxy.key;
+  return { browser: sharedBrowser, context: sharedContext };
+}
 
 function buildEbaySoldUrl(query: string): string {
   const cleaned = query
-    .replace(/[^\w\säöüÄÖÜß\-]/gi, '')
-    .replace(/\s+/g, ' ')
+    .replace(/[^\w\säöüÄÖÜß\-]/gi, "")
+    .replace(/\s+/g, " ")
     .trim()
     .slice(0, MAX_QUERY_LEN);
   const encoded = encodeURIComponent(cleaned);
@@ -25,44 +103,35 @@ function extractSoldPrices(html: string): number[] {
   const addPrice = (text: string) => {
     if (!text || seen.has(text)) return;
     seen.add(text);
-
-    let normalized = text.replace(/\./g, '').replace(/,/g, '.');
-    normalized = normalized.replace(/[^\d.]/g, '');
-    const parts = normalized.split('.').filter((p) => p);
+    let normalized = text.replace(/\./g, "").replace(/,/g, ".");
+    normalized = normalized.replace(/[^\d.]/g, "");
+    const parts = normalized.split(".").filter((p) => p);
     let price = 0;
     if (parts.length >= 2) {
-      const decimal = parts.pop() ?? '00';
-      const integer = parts.join('');
+      const decimal = parts.pop() ?? "00";
+      const integer = parts.join("");
       price = Number(`${integer}.${decimal}`);
     } else if (parts.length === 1) {
       price = Number(parts[0]);
     }
-
-    if (price > 0.5 && price < 5000) {
-      prices.push(price);
-    }
+    if (price > 0.5 && price < 5000) prices.push(price);
   };
 
   const text = $.text();
   const regex = /\b\d{1,3}(?:[.,]\d{3})*[.,]\d{2}\s*[€]|\s*€\s*\d{1,3}(?:[.,]\d{3})*[.,]\d{2}|EUR\s*\d{1,3}(?:[.,]\d{3})*[.,]\d{2}/gi;
   let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    addPrice(match[0]);
-  }
-
+  while ((match = regex.exec(text)) !== null) addPrice(match[0]);
   return prices;
 }
 
 function filterOutliers(prices: number[]): number[] {
   if (prices.length < 4) return prices;
-
   const sorted = [...prices].sort((a, b) => a - b);
   const q1 = sorted[Math.floor(sorted.length * 0.25)];
   const q3 = sorted[Math.ceil(sorted.length * 0.75)];
   const iqr = q3 - q1;
   const lower = q1 - 1.5 * iqr;
   const upper = q3 + 1.5 * iqr;
-
   return prices.filter((p) => p >= lower && p <= upper);
 }
 
@@ -75,67 +144,58 @@ export async function lookupSoldPrice(
   item: ScrapedItem,
   _antiBot: AntiBotConfig
 ): Promise<{ average: number; count: number } | null> {
-  const username = process.env.DECODO_API_USERNAME;
-  const password = process.env.DECODO_API_PASSWORD;
-  if (!username || !password) {
-    log('warn', 'DECODO_API_USERNAME or DECODO_API_PASSWORD not set; skipping eBay sold lookup', { itemId: item.id });
+  const proxy = getProxyAgent();
+  if (!proxy) {
+    log("warn", "VINTED_PROXY_URL not set; skipping eBay sold lookup", { itemId: item.id });
     return null;
   }
 
-  const brand = item.brand ? `${item.brand} ` : '';
-  const title = item.title || '';
+  const brand = item.brand ? `${item.brand} ` : "";
+  const title = item.title || "";
   const query = `${brand}${title}`.trim();
   const url = buildEbaySoldUrl(query);
-  const auth = Buffer.from(`${username}:${password}`).toString('base64');
 
   try {
-    await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 1200));
-
-    const response = await axios.post(
-      DECODO_API_URL,
-      {
-        url,
-        proxy_pool: 'premium',
-        headless: 'html',
-      },
-      {
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-          Authorization: `Basic ${auth}`,
-        },
-        timeout: 90000,
+    await randomDelay(800, 1200);
+    const { context } = await ensureSharedBrowser();
+    const page = await context.newPage();
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.waitForTimeout(1500);
+      const html = await page.content();
+      const allPrices = extractSoldPrices(html);
+      if (allPrices.length === 0) {
+        log("warn", "eBay sold scrape returned no prices", { itemId: item.id, query });
+        return null;
       }
-    );
-
-    const html =
-      typeof response.data === 'string'
-        ? response.data
-        : response.data?.result?.content || response.data?.content || response.data?.html || JSON.stringify(response.data);
-
-    const allPrices = extractSoldPrices(html);
-    if (allPrices.length === 0) {
-      log('warn', 'Decodo scrape returned no eBay prices', { itemId: item.id, query });
-      return null;
+      const filtered = filterOutliers(allPrices).slice(0, 10);
+      if (filtered.length === 0) return null;
+      const avg = Math.round(average(filtered) * 100) / 100;
+      log("info", "eBay sold lookup completed via Proxy-Cheap", {
+        itemId: item.id,
+        query,
+        rawCount: allPrices.length,
+        usedCount: filtered.length,
+        average: avg,
+      });
+      return { average: avg, count: filtered.length };
+    } finally {
+      await page.close().catch(() => {});
     }
-
-    const filtered = filterOutliers(allPrices).slice(0, 10);
-    if (filtered.length === 0) {
-      return null;
-    }
-
-    const avg = Math.round(average(filtered) * 100) / 100;
-    log('info', 'eBay sold lookup completed via Decodo', {
-      itemId: item.id,
-      query,
-      rawCount: allPrices.length,
-      usedCount: filtered.length,
-      average: avg,
-    });
-
-    return { average: avg, count: filtered.length };
   } catch (error) {
-    log('warn', 'Decodo eBay sold lookup failed', { itemId: item.id, query, error: String(error) });
+    log("warn", "eBay sold lookup via Proxy-Cheap failed", { itemId: item.id, query, error: String(error) });
     return null;
   }
+}
+
+export async function closeEbayBrowser(): Promise<void> {
+  if (sharedContext) {
+    await sharedContext.close().catch(() => {});
+    sharedContext = null;
+  }
+  if (sharedBrowser) {
+    await sharedBrowser.close().catch(() => {});
+    sharedBrowser = null;
+  }
+  sharedProxyKey = null;
 }

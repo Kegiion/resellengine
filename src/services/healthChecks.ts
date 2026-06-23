@@ -130,31 +130,30 @@ async function checkSupabaseDatabase(client: SupabaseClient): Promise<HealthChec
   }
 }
 
-async function checkDecodoApi(): Promise<HealthCheckResult> {
-  const username = process.env.DECODO_API_USERNAME;
-  const password = process.env.DECODO_API_PASSWORD;
-  if (!username || !password) {
-    return { name: 'Decodo API', status: 'error', message: 'DECODO_API_USERNAME oder DECODO_API_PASSWORD nicht gesetzt.' };
+async function checkEbayProxy(): Promise<HealthCheckResult> {
+  const proxy = parseVintedProxy();
+  if (!proxy) {
+    return { name: 'eBay Proxy', status: 'error', message: 'VINTED_PROXY_URL nicht gesetzt.' };
   }
-  const auth = Buffer.from(`${username}:${password}`).toString('base64');
   try {
-    const response = await axios.post(
-      'https://scraper-api.decodo.com/v2/scrape',
-      {
-        url: 'https://www.vinted.de/catalog?search_text=ralph+lauren&price_to=50&order=newest_first',
-        method: 'GET',
+    const response = await axios.get('https://www.ebay.de/sch/i.html?_nkw=iphone+13&_sacat=0&LH_Complete=1&LH_Sold=1', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },
-      {
-        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
-        timeout: 60000,
-      }
-    );
-    if (response.status === 200 && Array.isArray(response.data?.results)) {
-      return { name: 'Decodo API', status: 'ready', message: 'Decodo API authentifiziert und Scrape-Endpunkt erreichbar.' };
+      proxy: {
+        protocol: proxy.protocol,
+        host: proxy.host,
+        port: proxy.port,
+        auth: proxy.auth,
+      },
+      timeout: 30000,
+    });
+    if (response.status === 200) {
+      return { name: 'eBay Proxy', status: 'ready', message: 'eBay über Proxy-Cheap erreichbar.' };
     }
-    return { name: 'Decodo API', status: 'error', message: 'Decodo API lieferte eine ungültige Antwort.' };
+    return { name: 'eBay Proxy', status: 'error', message: 'eBay lieferte eine ungültige Antwort.' };
   } catch (err) {
-    return { name: 'Decodo API', status: 'error', message: `Decodo API Test fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}` };
+    return { name: 'eBay Proxy', status: 'error', message: `eBay Proxy-Check fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -178,7 +177,7 @@ export async function runHealthChecks(client: SupabaseClient): Promise<SystemHea
   const checks = await Promise.all([
     checkVintedConnection(),
     checkSupabaseDatabase(client),
-    checkDecodoApi(),
+    checkEbayProxy(),
     checkDiscordWebhook(),
   ]);
   log('info', 'System health checks completed', { checks });
