@@ -322,9 +322,9 @@ interface VintedApiItem {
   brand_title?: string;
   size_title?: string;
   is_visible?: boolean;
-  created_at_ts?: string;
-  photo_uploaded_at?: string;
-  timestamp?: string;
+  created_at_ts?: string | number;
+  photo_uploaded_at?: string | number;
+  timestamp?: string | number;
   photos?: Array<{ id: number; url: string; thumbnails?: { large: string; medium: string; small: string } }>;
   full_size_url?: string;
   favourite_count?: number;
@@ -337,17 +337,24 @@ function buildCatalogApiUrl(keywords: string[], maxPrice: number, page = 1): str
 }
 
 function getItemListedAt(item: VintedApiItem): string {
-  const tsSeconds =
-    Number(item.created_at_ts) ||
-    Number(item.photo_uploaded_at) ||
-    Number(item.timestamp) ||
-    0;
-  if (tsSeconds > 1_000_000_000_000) {
-    return new Date(tsSeconds).toISOString();
+  const raw = item.created_at_ts || item.photo_uploaded_at || item.timestamp;
+  if (!raw) {
+    return new Date().toISOString();
   }
-  if (tsSeconds > 1_000_000_000) {
+
+  const parsed = Date.parse(String(raw));
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toISOString();
+  }
+
+  const tsSeconds = Number(raw);
+  if (!Number.isNaN(tsSeconds) && tsSeconds > 0) {
+    if (tsSeconds > 1_000_000_000_000) {
+      return new Date(tsSeconds).toISOString();
+    }
     return new Date(tsSeconds * 1000).toISOString();
   }
+
   return new Date().toISOString();
 }
 
