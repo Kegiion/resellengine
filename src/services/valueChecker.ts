@@ -37,7 +37,7 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
   // Stufe 1: Lokale Text- und Spam-Filter sind bereits im Worker (isSpamTagged) gelaufen.
   // Wir landen hier nur, wenn der Artikel die Text-/Spam-Filter passiert hat.
 
-  // Stufe 2: eBay-Lookup (geringe Kosten) + Bild-Authentizitätsanalyse via BluesMinds.
+  // Stufe 2: eBay-Lookup (geringe Kosten) + Bild-Authentizitätsanalyse via OpenAI gpt-4o.
   let estimatedResellValue = await estimateResellValue(item, config);
   if (estimatedResellValue === null) {
     const reason = 'Keine eBay-Verkaufspreise gefunden (weniger als 3 passende Listings).';
@@ -52,20 +52,20 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
     if (authenticity.success && authenticity.result) {
       const { isAuthentic, confidence, reason } = authenticity.result;
       if (!isAuthentic || confidence < 70) {
-        const rejectionReason = `Bildanalyse (BluesMinds) vermutet Fälschung oder Unsicherheit: ${reason} (confidence: ${confidence}).`;
+        const rejectionReason = `Bildanalyse (OpenAI gpt-4o) vermutet Fälschung oder Unsicherheit: ${reason} (confidence: ${confidence}).`;
         log('info', `Deal verworfen in Stufe 2: ${rejectionReason}`, { itemId: item.id });
         await sendFilterLogNotification(item, 2, rejectionReason);
         return null;
       }
-      log('info', 'BluesMinds authenticity check passed', { itemId: item.id, confidence, reason });
+      log('info', 'OpenAI gpt-4o authenticity check passed', { itemId: item.id, confidence, reason });
     } else {
-      log('warn', 'BluesMinds authenticity check failed; continuing without image analysis', {
+      log('warn', 'OpenAI gpt-4o authenticity check failed; continuing without image analysis', {
         itemId: item.id,
         error: authenticity.error,
       });
     }
   } else {
-    log('info', 'No image URL available; skipping BluesMinds authenticity check', { itemId: item.id });
+    log('info', 'No image URL available; skipping OpenAI gpt-4o authenticity check', { itemId: item.id });
   }
 
   // Stufe 3: ROI-Berechnung mit harter 25-Euro-Huerde fuer Bildanalyse.
