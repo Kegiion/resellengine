@@ -318,12 +318,17 @@ interface VintedApiItem {
   };
   path: string;
   thumbnail?: string;
+  url?: string;
   brand_title?: string;
   size_title?: string;
   is_visible?: boolean;
   created_at_ts?: string;
   photo_uploaded_at?: string;
   timestamp?: string;
+  photos?: Array<{ id: number; url: string; thumbnails?: { large: string; medium: string; small: string } }>;
+  full_size_url?: string;
+  favourite_count?: number;
+  view_count?: number;
 }
 
 function buildCatalogApiUrl(keywords: string[], maxPrice: number, page = 1): string {
@@ -372,7 +377,7 @@ function mapApiItem(item: VintedApiItem): ScrapedItem {
     price,
     currency,
     url: path.startsWith('http') ? path : `${BASE_URL}${path}`,
-    imageUrl: item.thumbnail,
+    imageUrl: item.thumbnail || item.photos?.[0]?.thumbnails?.medium || item.photos?.[0]?.url || item.full_size_url || item.url,
     brand: item.brand_title,
     size: item.size_title,
     scrapedAt: new Date().toISOString(),
