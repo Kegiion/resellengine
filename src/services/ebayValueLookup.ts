@@ -111,13 +111,24 @@ function filterOutliers(prices: number[]): number[] {
   const q3 = sorted[Math.ceil(sorted.length * 0.75)];
   const iqr = q3 - q1;
   const lower = q1 - 1.5 * iqr;
-  const upper = q3 + 1.5 * iqr;
+  const upper = q3 + 1.0 * iqr;
   return prices.filter((p) => p >= lower && p <= upper);
 }
 
-function average(prices: number[]): number {
+function median(prices: number[]): number {
   if (prices.length === 0) return 0;
-  return prices.reduce((a, b) => a + b, 0) / prices.length;
+  const sorted = [...prices].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function estimateMarketValue(prices: number[]): number {
+  const sorted = [...prices].sort((a, b) => a - b);
+  const q1 = sorted[Math.floor(sorted.length * 0.25)];
+  const medianValue = median(sorted);
+  // conservative estimate: weighted average leaning toward median/q1 to avoid outlier inflation
+  const conservative = (medianValue * 2 + q1 + sorted[Math.floor(sorted.length * 0.1)]) / 4;
+  return Math.round(conservative * 100) / 100;
 }
 
 export async function lookupSoldPrice(
@@ -138,21 +149,21 @@ export async function lookupSoldPrice(
       await page.waitForTimeout(3000);
       const html = await page.content();
       const allPrices = extractSoldPrices(html);
-      if (allPrices.length === 0) {
-        log("warn", "eBay sold scrape returned no prices", { itemId: item.id, query });
+      if (allPrices.length < 5) {
+        log("warn", "eBay sold scrape returned too few prices", { itemId: item.id, query, count: allPrices.length });
         return null;
       }
-      const filtered = filterOutliers(allPrices).slice(0, 10);
-      if (filtered.length === 0) return null;
-      const avg = Math.round(average(filtered) * 100) / 100;
+      const filtered = filterOutliers(allPrices).slice(0, 15);
+      if (filtered.length < 5) return null;
+      const value = estimateMarketValue(filtered);
       log("info", "eBay sold lookup completed", {
         itemId: item.id,
         query,
         rawCount: allPrices.length,
         usedCount: filtered.length,
-        average: avg,
+        estimatedValue: value,
       });
-      return { average: avg, count: filtered.length };
+      return { average: value, count: filtered.length };
     } finally {
       await page.close().catch(() => {});
     }
