@@ -8,7 +8,13 @@ export interface AuthenticityResult {
 }
 
 const SYSTEM_PROMPT =
-  "Du bist ein Experte für Secondhand-Mode. Analysiere das Bild des Artikels. Die meisten Vinted-/Kleinanzeigen-Fotos sind authentische gebrauchte Kleidung mit schlechter Beleuchtung. Markiere ein Produkt nur als nicht authentisch (isAuthentic: false), wenn du wirklich klare Anzeichen für eine Fälschung siehst (z. B. falscher Schriftzug, offensichtlich falsche Tags, sehr schlechte Verarbeitung, die nicht zum Preis/Bild passt). Bei normaler Unsicherheit, schlechtem Licht oder fehlenden Detailfotos gilt: isAuthentic: true, confidence niedrig bis mittel. Antworte NUR in diesem JSON-Format: { isAuthentic: true/false, confidence: 0-100, reason: 'Deine Begründung auf Deutsch' }";
+  `Du bist ein Experte für Secondhand-Mode. Analysiere das Bild des Artikels. Die meisten Vinted-/Kleinanzeigen-Fotos sind authentische gebrauchte Kleidung, oft mit schlechter Beleuchtung. Markiere ein Produkt als NICHT authentisch (isAuthentic: false) in diesen Fällen:
+- Klare Anzeichen einer Fälschung (z. B. falscher Schriftzug, offensichtlich falsche Tags, sehr schlechte Verarbeitung, die nicht zum Preis passt).
+- Das Bild ist so dunkel, unscharf oder entfernt aufgenommen, dass KEIN relevantes Detail (Logo, Etikett, Nähte, Material, Seriennummer) erkennbar ist. Dann kann die Authentizität nicht geprüft werden.
+
+Bei normaler, aber schlechter Beleuchtung, wo Form, Logo oder Material trotzdem erkennbar sind, gilt: isAuthentic: true, confidence niedrig bis mittel. Wenn die Bildqualität die Prüfung verhindert, gilt: isAuthentic: false, reason muss das Problem nennen (z. B. "zu dunkel", "unscharf", "kein Detail erkennbar").
+
+Antworte NUR in diesem JSON-Format: { isAuthentic: true/false, confidence: 0-100, reason: 'Deine Begründung auf Deutsch' }`;
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -110,16 +116,30 @@ export async function analyzeMultipleImagesAuthenticity(
     return { success: false, error: "All image authenticity analyses failed" };
   }
 
-  const rejected = results.filter((r) => !r.isAuthentic || r.confidence < 70);
-  const isAuthentic = rejected.length === 0;
+  const badQualityReasons = ['zu dunkel', 'unscharf', 'kein detail', 'keine details', 'nicht erkennbar', 'unerkennbar', 'zu weit entfernt', 'zu klein', 'schlechte qualität'];
+  const isQualityFailure = (reason: string) =>
+    badQualityReasons.some((indicator) => reason.toLowerCase().includes(indicator));
+
+  const fakeOrDamaged = results.filter((r) => !r.isAuthentic && !isQualityFailure(r.reason));
+  const qualityFailures = results.filter((r) => !r.isAuthentic && isQualityFailure(r.reason));
+  const lowConfidence = results.filter((r) => r.isAuthentic && r.confidence < 70);
+
+  const qualityFailureCount = qualityFailures.length;
+  const qualityFailureThreshold = Math.ceil(results.length / 2);
+  const isAuthentic = fakeOrDamaged.length === 0 && qualityFailureCount < qualityFailureThreshold && lowConfidence.length < qualityFailureThreshold;
   const lowestConfidence = Math.min(...results.map((r) => r.confidence));
-  const reasons = isAuthentic ? [] : rejected.map((r) => r.reason);
+  const reasons = isAuthentic
+    ? []
+    : [...fakeOrDamaged, ...qualityFailures, ...lowConfidence].map((r) => r.reason);
 
   log("info", "OpenAI gpt-4o multi-image authenticity analysis", {
     imageCount: urls.length,
     analyzedCount: results.length,
     isAuthentic,
     lowestConfidence,
+    qualityFailures: qualityFailureCount,
+    fakeOrDamaged: fakeOrDamaged.length,
+    lowConfidence: lowConfidence.length,
   });
 
   return {
