@@ -1,6 +1,6 @@
 import { searchVintedStream, fetchGuestCookiesOnce } from '../scrapers/vintedScraper.js';
 import { verifyDeal } from './valueChecker.js';
-import { insertDeal } from './database.js';
+import { insertDeal, getFullConfig } from './database.js';
 import { sendDealNotification } from './notificationGateway.js';
 import { humanizedDelay } from '../utils/delay.js';
 import { isFreshItem, isFreshApiTimestamp } from '../utils/isFreshItem.js';
@@ -13,10 +13,13 @@ const SNIPER_LOOP_MIN_MS = 12_000;
 const SNIPER_LOOP_MAX_MS = 22_000;
 const MAX_FIRST_SEEN_CACHE = 5000;
 const FIRST_SEEN_MAX_AGE_MS = 120_000;
+const JOB_SYNC_INTERVAL_MS = 60_000;
 
 const seenItemIds = new Set<string>();
 const firstSeenAt = new Map<string, number>();
 const sniperAbortControllers = new Map<string, AbortController>();
+let sniperClient: SupabaseClient | null = null;
+let sniperSyncTimer: NodeJS.Timeout | null = null;
 
 function recordFirstSeen(item: ScrapedItem): void {
   if (!firstSeenAt.has(item.id)) {
@@ -68,7 +71,6 @@ async function processItem(
 
 async function runSniperLoop(
   job: SearchJob,
-  config: AppConfig,
   client: SupabaseClient,
   signal: AbortSignal
 ): Promise<void> {
@@ -79,12 +81,19 @@ async function runSniperLoop(
     }
 
     try {
-      log('info', 'Sniper loop tick', { jobId: job.id, keywords: job.keywords });
-      const items = await searchVintedStream(job.keywords, job.maxPrice, config.antiBot);
+      const config = await getFullConfig(client);
+      const liveJob = config.jobs.find((j) => j.id === job.id && j.platform === 'vinted' && j.enabled);
+      if (!liveJob) {
+        log('info', 'Sniper loop stopping: job no longer enabled or removed', { jobId: job.id });
+        return;
+      }
+
+      log('info', 'Sniper loop tick', { jobId: liveJob.id, keywords: liveJob.keywords });
+      const items = await searchVintedStream(liveJob.keywords, liveJob.maxPrice, config.antiBot);
 
       for (const item of items) {
         if (signal.aborted) break;
-        await processItem(item, job, config, client);
+        await processItem(item, liveJob, config, client);
       }
     } catch (err) {
       log('error', 'Sniper loop tick failed', { jobId: job.id, error: String(err) });
@@ -92,6 +101,46 @@ async function runSniperLoop(
 
     if (signal.aborted) break;
     await humanizedDelay(SNIPER_LOOP_MIN_MS, SNIPER_LOOP_MAX_MS);
+  }
+}
+
+function stopJobLoop(jobId: string): void {
+  const controller = sniperAbortControllers.get(jobId);
+  if (controller) {
+    controller.abort();
+    sniperAbortControllers.delete(jobId);
+    log('info', 'Sniper loop stopped for job', { jobId });
+  }
+}
+
+function startJobLoop(job: SearchJob, client: SupabaseClient): void {
+  if (sniperAbortControllers.has(job.id)) return;
+  const controller = new AbortController();
+  sniperAbortControllers.set(job.id, controller);
+  runSniperLoop(job, client, controller.signal).catch((err) => {
+    log('error', 'Sniper loop crashed', { jobId: job.id, error: String(err) });
+  });
+}
+
+export async function syncSniperJobs(client: SupabaseClient): Promise<void> {
+  try {
+    const config = await getFullConfig(client);
+    const enabledJobs = config.jobs.filter((j) => j.platform === 'vinted' && j.enabled);
+    const enabledIds = new Set(enabledJobs.map((j) => j.id));
+
+    for (const jobId of sniperAbortControllers.keys()) {
+      if (!enabledIds.has(jobId)) {
+        stopJobLoop(jobId);
+      }
+    }
+
+    for (const job of enabledJobs) {
+      if (!sniperAbortControllers.has(job.id)) {
+        startJobLoop(job, client);
+      }
+    }
+  } catch (err) {
+    log('error', 'Sniper job sync failed', { error: String(err) });
   }
 }
 
@@ -105,13 +154,7 @@ export async function startVintedSniper(
     return;
   }
 
-  const vintedJobs = config.jobs.filter((j) => j.platform === 'vinted');
-  if (vintedJobs.length === 0) {
-    log('info', 'No Vinted jobs configured; sniper not started');
-    return;
-  }
-
-  log('info', 'Starting Vinted real-time sniper', { jobs: vintedJobs.length });
+  sniperClient = client;
 
   try {
     const guest = await fetchGuestCookiesOnce(config.antiBot);
@@ -125,20 +168,32 @@ export async function startVintedSniper(
     return;
   }
 
-  for (const job of vintedJobs) {
-    const controller = new AbortController();
-    sniperAbortControllers.set(job.id, controller);
-    runSniperLoop(job, config, client, controller.signal).catch((err) => {
-      log('error', 'Sniper loop crashed', { jobId: job.id, error: String(err) });
-    });
+  await syncSniperJobs(client);
+
+  if (sniperSyncTimer) {
+    clearInterval(sniperSyncTimer);
   }
+  sniperSyncTimer = setInterval(() => {
+    if (sniperClient) syncSniperJobs(sniperClient).catch(() => {});
+  }, JOB_SYNC_INTERVAL_MS);
+  sniperSyncTimer.unref?.();
+
+  log('info', 'Vinted sniper started with job sync', { jobs: sniperAbortControllers.size });
 }
 
 export function stopVintedSniper(): void {
+  if (sniperSyncTimer) {
+    clearInterval(sniperSyncTimer);
+    sniperSyncTimer = null;
+  }
   for (const [jobId, controller] of sniperAbortControllers) {
     controller.abort();
     log('info', 'Sniper loop aborted', { jobId });
   }
   sniperAbortControllers.clear();
   log('info', 'Vinted sniper stopped');
+}
+
+export function getSniperRunningJobCount(): number {
+  return sniperAbortControllers.size;
 }
