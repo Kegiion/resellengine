@@ -85,6 +85,7 @@ export interface VerifiedDeal {
   roiPercent: number;
   url: string;
   imageUrl?: string;
+  imageUrls?: string[];
   condition?: string;
   seller?: string;
   createdAt: string;

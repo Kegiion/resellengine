@@ -342,7 +342,8 @@ export async function sendMasterDealEmbed(deal: VerifiedDeal): Promise<void> {
       { name: 'Netto-Profit', value: `${deal.netProfit.toFixed(2)} ${deal.currency}`, inline: true },
       { name: 'ROI', value: `${deal.roiPercent.toFixed(1)}%`, inline: true },
       { name: 'Zustand', value: deal.condition || 'unbekannt', inline: true },
-      { name: '📊 Marktwert-Analyse', value: marketValueField }
+      { name: '📊 Marktwert-Analyse', value: marketValueField },
+      { name: '📸 Bilder analysiert', value: `${deal.imageUrls?.length ?? 1}`, inline: true }
     )
     .setFooter({ text: `${footerText} • ResellEngine` })
     .setTimestamp(new Date());

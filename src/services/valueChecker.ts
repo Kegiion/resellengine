@@ -52,7 +52,7 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
     const authenticity = await analyzeMultipleImagesAuthenticity(imageUrls, item.title, 5);
     if (authenticity.success && authenticity.result) {
       if (!authenticity.result.isAuthentic) {
-        const rejectionReason = `Bildanalyse (OpenAI gpt-4o) vermutet auf mindestens einem Bild eine Fälschung oder Unsicherheit: ${authenticity.result.reasons.join(' | ')} (niedrigste confidence: ${authenticity.result.lowestConfidence}).`;
+        const rejectionReason = `Bildanalyse (OpenAI gpt-4o) hat ${imageUrls.length} Bilder geprüft und vermutet auf mindestens einem Bild eine Fälschung oder Unsicherheit: ${authenticity.result.reasons.join(' | ')} (niedrigste confidence: ${authenticity.result.lowestConfidence}).`;
         log('info', `Deal verworfen in Stufe 2: ${rejectionReason}`, { itemId: item.id });
         await sendFilterLogNotification(item, 2, rejectionReason);
         return null;
@@ -146,6 +146,7 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
     roiPercent,
     url: item.url,
     imageUrl: item.imageUrl,
+    imageUrls: item.imageUrls,
     condition: item.condition,
     seller: item.seller,
     createdAt: item.scrapedAt,
