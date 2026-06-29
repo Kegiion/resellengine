@@ -116,28 +116,28 @@ export async function analyzeMultipleImagesAuthenticity(
     return { success: false, error: "All image authenticity analyses failed" };
   }
 
-  const badQualityReasons = ['zu dunkel', 'unscharf', 'kein detail', 'keine details', 'nicht erkennbar', 'unerkennbar', 'zu weit entfernt', 'zu klein', 'schlechte qualität'];
+  const badQualityReasons = ['zu dunkel', 'unscharf', 'kein detail', 'keine details', 'nicht erkennbar', 'unerkennbar', 'zu weit entfernt', 'zu klein', 'schlechte qualität', 'nicht bewertbar', 'kein logo', 'kein etikett', 'authentizität bestätigen'];
   const isQualityFailure = (reason: string) =>
     badQualityReasons.some((indicator) => reason.toLowerCase().includes(indicator));
 
   const fakeOrDamaged = results.filter((r) => !r.isAuthentic && !isQualityFailure(r.reason));
   const qualityFailures = results.filter((r) => !r.isAuthentic && isQualityFailure(r.reason));
+  const clearAuthentic = results.filter((r) => r.isAuthentic && r.confidence >= 70);
   const lowConfidence = results.filter((r) => r.isAuthentic && r.confidence < 70);
 
-  const qualityFailureCount = qualityFailures.length;
-  const qualityFailureThreshold = Math.ceil(results.length / 2);
-  const isAuthentic = fakeOrDamaged.length === 0 && qualityFailureCount < qualityFailureThreshold && lowConfidence.length < qualityFailureThreshold;
+  const isAuthentic =
+    fakeOrDamaged.length === 0 &&
+    (clearAuthentic.length > 0 || (qualityFailures.length < results.length && lowConfidence.length < results.length));
   const lowestConfidence = Math.min(...results.map((r) => r.confidence));
-  const reasons = isAuthentic
-    ? []
-    : [...fakeOrDamaged, ...qualityFailures, ...lowConfidence].map((r) => r.reason);
+  const reasons = isAuthentic ? [] : fakeOrDamaged.map((r) => r.reason);
 
   log("info", "OpenAI gpt-4o multi-image authenticity analysis", {
     imageCount: urls.length,
     analyzedCount: results.length,
     isAuthentic,
     lowestConfidence,
-    qualityFailures: qualityFailureCount,
+    clearAuthentic: clearAuthentic.length,
+    qualityFailures: qualityFailures.length,
     fakeOrDamaged: fakeOrDamaged.length,
     lowConfidence: lowConfidence.length,
   });
