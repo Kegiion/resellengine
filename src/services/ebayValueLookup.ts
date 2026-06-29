@@ -12,35 +12,9 @@ const MAX_QUERY_LEN = 80;
 
 let sharedBrowser: import("playwright").Browser | null = null;
 let sharedContext: import("playwright").BrowserContext | null = null;
-let sharedProxyKey: string | null = null;
-
-function getProxyAgent() {
-  const proxyUrl = process.env.VINTED_PROXY_URL;
-  if (!proxyUrl) return undefined;
-  try {
-    const parsed = new URL(proxyUrl);
-    return {
-      protocol: parsed.protocol.replace(":", ""),
-      host: parsed.hostname,
-      port: Number(parsed.port),
-      auth: parsed.username
-        ? {
-            username: decodeURIComponent(parsed.username),
-            password: decodeURIComponent(parsed.password || ""),
-          }
-        : undefined,
-      key: proxyUrl,
-    };
-  } catch {
-    return undefined;
-  }
-}
 
 async function ensureSharedBrowser(): Promise<{ browser: import("playwright").Browser; context: import("playwright").BrowserContext }> {
-  const proxy = getProxyAgent();
-  const proxyKey = proxy ? proxy.key : 'direct';
-
-  if (sharedBrowser && sharedContext && sharedProxyKey === proxyKey) {
+  if (sharedBrowser && sharedContext) {
     return { browser: sharedBrowser, context: sharedContext };
   }
 
@@ -64,26 +38,16 @@ async function ensureSharedBrowser(): Promise<{ browser: import("playwright").Br
   });
   sharedBrowser = browser;
 
-  const contextOptions: any = {
+  sharedContext = await browser.newContext({
     locale: "de-DE",
     timezoneId: "Europe/Berlin",
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-  };
-  if (proxy) {
-    contextOptions.proxy = {
-      server: `${proxy.protocol}://${proxy.host}:${proxy.port}`,
-      username: proxy.auth?.username,
-      password: proxy.auth?.password,
-    };
-  }
-
-  sharedContext = await browser.newContext(contextOptions);
+  });
 
   if (!sharedBrowser || !sharedContext) {
     throw new Error("Failed to launch eBay browser");
   }
-  sharedProxyKey = proxyKey;
   return { browser: sharedBrowser, context: sharedContext };
 }
 
@@ -160,12 +124,6 @@ export async function lookupSoldPrice(
   item: ScrapedItem,
   _antiBot: AntiBotConfig
 ): Promise<{ average: number; count: number } | null> {
-  const proxy = getProxyAgent();
-  if (!proxy) {
-    log("warn", "VINTED_PROXY_URL not set; skipping eBay sold lookup", { itemId: item.id });
-    return null;
-  }
-
   const brand = item.brand ? `${item.brand} ` : "";
   const title = item.title || "";
   const query = `${brand}${title}`.trim();
@@ -176,8 +134,8 @@ export async function lookupSoldPrice(
     const { context } = await ensureSharedBrowser();
     const page = await context.newPage();
     try {
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await page.waitForTimeout(1500);
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await page.waitForTimeout(3000);
       const html = await page.content();
       const allPrices = extractSoldPrices(html);
       if (allPrices.length === 0) {
@@ -187,7 +145,7 @@ export async function lookupSoldPrice(
       const filtered = filterOutliers(allPrices).slice(0, 10);
       if (filtered.length === 0) return null;
       const avg = Math.round(average(filtered) * 100) / 100;
-      log("info", "eBay sold lookup completed via Proxy-Cheap", {
+      log("info", "eBay sold lookup completed", {
         itemId: item.id,
         query,
         rawCount: allPrices.length,
@@ -199,7 +157,7 @@ export async function lookupSoldPrice(
       await page.close().catch(() => {});
     }
   } catch (error) {
-    log("warn", "eBay sold lookup via Proxy-Cheap failed", { itemId: item.id, query, error: String(error) });
+    log("warn", "eBay sold lookup failed", { itemId: item.id, query, error: String(error) });
     return null;
   }
 }
@@ -213,5 +171,4 @@ export async function closeEbayBrowser(): Promise<void> {
     await sharedBrowser.close().catch(() => {});
     sharedBrowser = null;
   }
-  sharedProxyKey = null;
 }
