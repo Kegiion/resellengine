@@ -322,6 +322,14 @@ export async function sendMasterDealEmbed(deal: VerifiedDeal): Promise<void> {
   const marketValueField = formatPriceEstimationField(deal, estimation);
   const footerText = `Preisschätzung basiert auf einem Abgleich von ${estimation.sampleSize} ähnlichen Artikeln im Zustand '${estimation.condition}'.`;
 
+  const listedAt = new Date(deal.listedAt || deal.createdAt || Date.now());
+  const ageMs = Date.now() - listedAt.getTime();
+  const ageText = ageMs < 60_000
+    ? `${Math.floor(ageMs / 1000)}s`
+    : ageMs < 3_600_000
+    ? `${Math.floor(ageMs / 60_000)}min`
+    : `${Math.floor(ageMs / 3_600_000)}h ${Math.floor((ageMs % 3_600_000) / 60_000)}min`;
+
   const embed = new EmbedBuilder()
     .setTitle(deal.title)
     .setURL(deal.url)
@@ -329,6 +337,7 @@ export async function sendMasterDealEmbed(deal: VerifiedDeal): Promise<void> {
     .addFields(
       { name: 'Plattform', value: deal.platform, inline: true },
       { name: 'Einkaufspreis', value: `${deal.price.toFixed(2)} ${deal.currency}`, inline: true },
+      { name: 'Eingestellt vor', value: ageText, inline: true },
       { name: 'Geschätzter Resell-Wert', value: `${deal.estimatedResellValue.toFixed(2)} ${deal.currency}`, inline: true },
       { name: 'Netto-Profit', value: `${deal.netProfit.toFixed(2)} ${deal.currency}`, inline: true },
       { name: 'ROI', value: `${deal.roiPercent.toFixed(1)}%`, inline: true },
@@ -336,7 +345,7 @@ export async function sendMasterDealEmbed(deal: VerifiedDeal): Promise<void> {
       { name: '📊 Marktwert-Analyse', value: marketValueField }
     )
     .setFooter({ text: `${footerText} • ResellEngine` })
-    .setTimestamp(new Date(deal.createdAt));
+    .setTimestamp(new Date());
 
   if (deal.imageUrl) {
     embed.setImage(deal.imageUrl);

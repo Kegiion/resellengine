@@ -143,6 +143,7 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
     condition: item.condition,
     seller: item.seller,
     createdAt: item.scrapedAt,
+    listedAt: item.listedAt,
   };
 }
 
