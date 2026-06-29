@@ -62,6 +62,7 @@ export interface ScrapedItem {
   currency: string;
   url: string;
   imageUrl?: string;
+  imageUrls?: string[];
   condition?: string;
   seller?: string;
   location?: string;

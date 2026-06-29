@@ -1,7 +1,7 @@
 import { log } from '../utils/logger.js';
 import { lookupSoldPrice } from './ebayValueLookup.js';
-import { analyzeProductImage } from './geminiService.js';
-import { analyzeImageAuthenticity } from './imageAnalysisService.js';
+import { analyzeAllProductImages } from './geminiService.js';
+import { analyzeMultipleImagesAuthenticity } from './imageAnalysisService.js';
 import { sendFilterLogNotification } from './notificationGateway.js';
 import { incrementEbayChecked, incrementProfitFiltered, incrementImageAnalysis } from './stats.js';
 import type { AppConfig, ScrapedItem, VerifiedDeal } from '../types/index.js';
@@ -46,26 +46,30 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
     return null;
   }
 
-  if (item.imageUrl) {
+  const imageUrls = item.imageUrls?.length ? item.imageUrls : item.imageUrl ? [item.imageUrl] : [];
+  if (imageUrls.length > 0) {
     incrementImageAnalysis();
-    const authenticity = await analyzeImageAuthenticity(item.imageUrl, item.title);
+    const authenticity = await analyzeMultipleImagesAuthenticity(imageUrls, item.title, 5);
     if (authenticity.success && authenticity.result) {
-      const { isAuthentic, confidence, reason } = authenticity.result;
-      if (!isAuthentic || confidence < 70) {
-        const rejectionReason = `Bildanalyse (OpenAI gpt-4o) vermutet Fälschung oder Unsicherheit: ${reason} (confidence: ${confidence}).`;
+      if (!authenticity.result.isAuthentic) {
+        const rejectionReason = `Bildanalyse (OpenAI gpt-4o) vermutet auf mindestens einem Bild eine Fälschung oder Unsicherheit: ${authenticity.result.reasons.join(' | ')} (niedrigste confidence: ${authenticity.result.lowestConfidence}).`;
         log('info', `Deal verworfen in Stufe 2: ${rejectionReason}`, { itemId: item.id });
         await sendFilterLogNotification(item, 2, rejectionReason);
         return null;
       }
-      log('info', 'OpenAI gpt-4o authenticity check passed', { itemId: item.id, confidence, reason });
+      log('info', 'OpenAI gpt-4o multi-image authenticity check passed', {
+        itemId: item.id,
+        imageCount: imageUrls.length,
+        lowestConfidence: authenticity.result.lowestConfidence,
+      });
     } else {
-      log('warn', 'OpenAI gpt-4o authenticity check failed; continuing without image analysis', {
+      log('warn', 'OpenAI gpt-4o multi-image authenticity check failed; continuing without image analysis', {
         itemId: item.id,
         error: authenticity.error,
       });
     }
   } else {
-    log('info', 'No image URL available; skipping OpenAI gpt-4o authenticity check', { itemId: item.id });
+    log('info', 'No image URLs available; skipping OpenAI gpt-4o authenticity check', { itemId: item.id });
   }
 
   // Stufe 3: ROI-Berechnung mit harter 25-Euro-Huerde fuer Bildanalyse.
@@ -81,26 +85,28 @@ export async function verifyDeal(item: ScrapedItem, config: AppConfig): Promise<
     return null;
   }
 
-  // Stufe 4: Nur fuer absolute Top-Profit-Deals (> 25 Euro) Bildanalyse via Gemini (teuer).
-  if (item.imageUrl) {
+  // Stufe 4: Nur fuer absolute Top-Profit-Deals (> 25 Euro) Bildanalyse via Gemini (teuer) auf allen Bildern.
+  if (imageUrls.length > 0) {
     incrementImageAnalysis();
-    const analysis = await analyzeProductImage(item.imageUrl);
+    const analysis = await analyzeAllProductImages(imageUrls, 5);
     if (analysis.success && analysis.result) {
       const { isDamaged, flaws, confidence } = analysis.result;
       if (isDamaged) {
         const reducedValue = Math.round(estimatedResellValue * 0.3 * 100) / 100;
-        const reason = `Bildanalyse erkannte Mängel (${flaws || 'nicht spezifiziert'}). Wiederverkaufswert um 70% reduziert auf ${reducedValue.toFixed(2)} €.`;
-        log('info', 'Image damage detected; reducing resell value by 70%', {
+        const reason = `Bildanalyse erkannte auf ${analysis.damagedImages || 1} von ${analysis.totalAnalyzed || imageUrls.length} Bildern Mängel (${flaws?.join(', ') || 'nicht spezifiziert'}). Wiederverkaufswert um 70% reduziert auf ${reducedValue.toFixed(2)} €.`;
+        log('info', 'Image damage detected on multiple images; reducing resell value by 70%', {
           itemId: item.id,
           originalValue: estimatedResellValue,
           reducedValue,
+          damagedImages: analysis.damagedImages,
+          totalImages: analysis.totalAnalyzed,
           flaws,
           confidence,
         });
         estimatedResellValue = reducedValue;
         await sendFilterLogNotification(item, 4, reason);
       } else {
-        log('info', 'Image analysis found no visible damage', { itemId: item.id, confidence });
+        log('info', 'Image analysis found no visible damage on any image', { itemId: item.id, imageCount: imageUrls.length, confidence });
       }
     } else {
       log('warn', 'Image damage analysis failed; continuing with full value', {

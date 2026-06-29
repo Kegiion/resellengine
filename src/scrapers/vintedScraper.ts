@@ -325,8 +325,7 @@ interface VintedApiItem {
   created_at_ts?: string | number;
   photo_uploaded_at?: string | number;
   timestamp?: string | number;
-  photos?: Array<{ id: number; url: string; thumbnails?: { large: string; medium: string; small: string } }>;
-  full_size_url?: string;
+  photos?: Array<{ id: number; url: string; full_size_url?: string; thumbnails?: { large: string; medium: string; small: string } }>;
   favourite_count?: number;
   view_count?: number;
   promoted?: boolean;
@@ -379,6 +378,10 @@ function mapApiItem(item: VintedApiItem): ScrapedItem {
   const currency = item.price?.currency_code || 'EUR';
   const path = item.path || '';
   const listedAt = getItemListedAt(item);
+  const allImageUrls = (item.photos || [])
+    .map((p) => p.thumbnails?.large || p.thumbnails?.medium || p.url || p.full_size_url)
+    .filter(Boolean) as string[];
+  const primaryImageUrl = item.thumbnail || item.photos?.[0]?.thumbnails?.medium || item.photos?.[0]?.url || item.photos?.[0]?.full_size_url || item.url;
   return {
     id: `vinted-${item.id}`,
     platform: 'vinted',
@@ -386,7 +389,8 @@ function mapApiItem(item: VintedApiItem): ScrapedItem {
     price,
     currency,
     url: path.startsWith('http') ? path : `${BASE_URL}${path}`,
-    imageUrl: item.thumbnail || item.photos?.[0]?.thumbnails?.medium || item.photos?.[0]?.url || item.full_size_url || item.url,
+    imageUrl: primaryImageUrl,
+    imageUrls: allImageUrls.length > 0 ? allImageUrls : (primaryImageUrl ? [primaryImageUrl] : undefined),
     brand: item.brand_title,
     size: item.size_title,
     scrapedAt: new Date().toISOString(),

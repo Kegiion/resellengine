@@ -1,6 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { readFileSync } from 'node:fs';
 import axios from 'axios';
+import { log } from '../utils/logger.js';
 import type { SEOTextResult } from '../types/index.js';
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? '';
@@ -129,7 +130,7 @@ Regeln:
   }
 }
 
-export async function analyzeProductImage(
+async function analyzeSingleProductImage(
   imageUrl: string,
   model = 'gemini-2.5-flash'
 ): Promise<AnalyzeProductImageResult> {
@@ -206,6 +207,70 @@ Gib ausschließlich ein JSON-Objekt im folgenden Format zurück. Keine Erklärun
     const message = err instanceof Error ? err.message : String(err);
     return { success: false, error: message };
   }
+}
+
+export async function analyzeProductImage(
+  imageUrl: string,
+  model = 'gemini-2.5-flash'
+): Promise<AnalyzeProductImageResult> {
+  return analyzeSingleProductImage(imageUrl, model);
+}
+
+export async function analyzeAllProductImages(
+  imageUrls: string[],
+  maxImages = 5,
+  model = 'gemini-2.5-flash'
+): Promise<AnalyzeProductImageResult & { damagedImages?: number; totalAnalyzed?: number; allFlaws?: string[] }> {
+  if (!GEMINI_API_KEY) {
+    return { success: false, error: 'GEMINI_API_KEY is not configured' };
+  }
+
+  const urls = imageUrls.slice(0, maxImages).filter((url) => url.startsWith('http'));
+  if (urls.length === 0) {
+    return { success: false, error: 'No valid image URLs provided' };
+  }
+
+  const perImageResults: ImageDamageAnalysis[] = [];
+  const errors: string[] = [];
+
+  for (const imageUrl of urls) {
+    const result = await analyzeSingleProductImage(imageUrl, model);
+    if (result.success && result.result) {
+      perImageResults.push(result.result);
+    } else {
+      errors.push(result.error || 'Unknown error');
+    }
+  }
+
+  if (perImageResults.length === 0) {
+    return { success: false, error: `All image analyses failed: ${errors.slice(0, 3).join('; ')}` };
+  }
+
+  const damaged = perImageResults.filter((r) => r.isDamaged);
+  const isDamaged = damaged.length > 0;
+  const allFlaws = Array.from(new Set(damaged.flatMap((r) => r.flaws || [])));
+  const confidence = isDamaged
+    ? Math.max(...damaged.map((r) => r.confidence || 0))
+    : Math.min(...perImageResults.map((r) => r.confidence || 1));
+
+  log('info', 'Gemini multi-image damage analysis', {
+    totalImages: urls.length,
+    analyzedCount: perImageResults.length,
+    damagedCount: damaged.length,
+    isDamaged,
+  });
+
+  return {
+    success: true,
+    result: {
+      isDamaged,
+      flaws: allFlaws.slice(0, 5),
+      confidence,
+    },
+    damagedImages: damaged.length,
+    totalAnalyzed: perImageResults.length,
+    allFlaws,
+  };
 }
 
 export function loadGeminiApiKeyFromConfig(configPath = './config.json'): string {

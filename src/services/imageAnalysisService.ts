@@ -72,3 +72,62 @@ export async function analyzeImageAuthenticity(
     return { success: false, error: message };
   }
 }
+
+export interface MultiImageAuthenticityResult {
+  isAuthentic: boolean;
+  lowestConfidence: number;
+  reasons: string[];
+}
+
+export async function analyzeMultipleImagesAuthenticity(
+  imageUrls: string[],
+  description?: string,
+  maxImages = 5
+): Promise<{ success: boolean; result?: MultiImageAuthenticityResult; error?: string }> {
+  if (!process.env.OPENAI_API_KEY) {
+    return { success: false, error: "OPENAI_API_KEY not configured" };
+  }
+
+  const urls = imageUrls.slice(0, maxImages).filter((url) => url.startsWith("http"));
+  if (urls.length === 0) {
+    return { success: false, error: "No valid image URLs provided" };
+  }
+
+  const results: AuthenticityResult[] = [];
+  for (const imageUrl of urls) {
+    const analysis = await analyzeImageAuthenticity(imageUrl, description);
+    if (analysis.success && analysis.result) {
+      results.push(analysis.result);
+    } else {
+      log("warn", "OpenAI gpt-4o authenticity analysis failed for one image", {
+        imageUrl,
+        error: analysis.error,
+      });
+    }
+  }
+
+  if (results.length === 0) {
+    return { success: false, error: "All image authenticity analyses failed" };
+  }
+
+  const rejected = results.filter((r) => !r.isAuthentic || r.confidence < 70);
+  const isAuthentic = rejected.length === 0;
+  const lowestConfidence = Math.min(...results.map((r) => r.confidence));
+  const reasons = isAuthentic ? [] : rejected.map((r) => r.reason);
+
+  log("info", "OpenAI gpt-4o multi-image authenticity analysis", {
+    imageCount: urls.length,
+    analyzedCount: results.length,
+    isAuthentic,
+    lowestConfidence,
+  });
+
+  return {
+    success: true,
+    result: {
+      isAuthentic,
+      lowestConfidence,
+      reasons,
+    },
+  };
+}
