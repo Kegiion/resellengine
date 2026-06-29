@@ -8,7 +8,7 @@ export interface AuthenticityResult {
 }
 
 const SYSTEM_PROMPT =
-  "Du bist ein Experte für Streetwear-Reselling und Fake-Erkennung. Analysiere das Bild des Artikels und die Beschreibung. Überprüfe: Sieht das Produkt original aus? Stimmen die Nähte/Tags grob überein? Antworte NUR in einem standardisierten JSON-Format: { isAuthentic: true/false, confidence: 0-100, reason: 'Deine Begründung auf Deutsch' }";
+  "Du bist ein Experte für Secondhand-Mode. Analysiere das Bild des Artikels. Die meisten Vinted-/Kleinanzeigen-Fotos sind authentische gebrauchte Kleidung mit schlechter Beleuchtung. Markiere ein Produkt nur als nicht authentisch (isAuthentic: false), wenn du wirklich klare Anzeichen für eine Fälschung siehst (z. B. falscher Schriftzug, offensichtlich falsche Tags, sehr schlechte Verarbeitung, die nicht zum Preis/Bild passt). Bei normaler Unsicherheit, schlechtem Licht oder fehlenden Detailfotos gilt: isAuthentic: true, confidence niedrig bis mittel. Antworte NUR in diesem JSON-Format: { isAuthentic: true/false, confidence: 0-100, reason: 'Deine Begründung auf Deutsch' }";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
