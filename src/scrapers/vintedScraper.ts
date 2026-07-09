@@ -309,6 +309,10 @@ export async function closeVintedBrowser(): Promise<void> {
   sharedProxyKey = null;
 }
 
+export function resetHandshakeFailures(): void {
+  handshakeFailures = 0;
+}
+
 interface VintedApiItem {
   id: number;
   title: string;

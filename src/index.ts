@@ -29,7 +29,7 @@ import {
   getSniperRunningJobCount,
 } from './services/vintedSniper.js';
 import { setSniperRunning } from './services/discordState.js';
-import { fetchGuestCookiesOnce } from './scrapers/vintedScraper.js';
+import { fetchGuestCookiesOnce, resetHandshakeFailures } from './scrapers/vintedScraper.js';
 import { initDiscordBot } from './discordBot.js';
 import { runHealthChecks } from './services/healthChecks.js';
 import type { VerifiedDeal } from './types/index.js';
@@ -258,6 +258,7 @@ app.post('/sniper/stop', async (_req, res) => {
 
 app.post('/force-handshake', async (_req, res) => {
   try {
+    resetHandshakeFailures();
     const client = getGlobalClient();
     if (!client) {
       res.status(503).json({ error: 'Database not initialized' });
