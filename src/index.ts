@@ -22,7 +22,8 @@ import {
 } from './services/geminiService.js';
 import { startRealtimeWorker, getWorkerStats } from './services/realtimeWorker.js';
 import { startScheduler } from './services/scheduler.js';
-import { startVintedSniper, syncSniperJobs } from './services/vintedSniper.js';
+import { startVintedSniper, syncSniperJobs, stopVintedSniper, getSniperRunningJobCount } from './services/vintedSniper.js';
+import { setSniperRunning } from './services/discordState.js';
 import { initDiscordBot } from './discordBot.js';
 import { runHealthChecks } from './services/healthChecks.js';
 import type { VerifiedDeal } from './types/index.js';
@@ -229,6 +230,24 @@ app.get('/stats', async (_req, res) => {
     log('error', 'Failed to load stats', { error: String(err) });
     res.status(500).json({ error: 'Failed to load stats' });
   }
+});
+
+app.post('/sniper/start', async (_req, res) => {
+  setSniperRunning(true);
+  const client = getGlobalClient();
+  if (client) {
+    try {
+      await syncSniperJobs(client);
+    } catch (err) {
+      log('error', 'Failed to sync sniper jobs on start', { error: String(err) });
+    }
+  }
+  res.json({ success: true, message: 'Sniper gestartet', runningJobs: getSniperRunningJobCount() });
+});
+
+app.post('/sniper/stop', async (_req, res) => {
+  setSniperRunning(false);
+  res.json({ success: true, message: 'Sniper pausiert' });
 });
 
 app.get('/system/health', async (_req, res) => {
