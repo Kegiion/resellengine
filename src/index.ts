@@ -22,8 +22,14 @@ import {
 } from './services/geminiService.js';
 import { startRealtimeWorker, getWorkerStats } from './services/realtimeWorker.js';
 import { startScheduler } from './services/scheduler.js';
-import { startVintedSniper, syncSniperJobs, stopVintedSniper, getSniperRunningJobCount } from './services/vintedSniper.js';
+import {
+  startVintedSniper,
+  syncSniperJobs,
+  stopVintedSniper,
+  getSniperRunningJobCount,
+} from './services/vintedSniper.js';
 import { setSniperRunning } from './services/discordState.js';
+import { fetchGuestCookiesOnce } from './scrapers/vintedScraper.js';
 import { initDiscordBot } from './discordBot.js';
 import { runHealthChecks } from './services/healthChecks.js';
 import type { VerifiedDeal } from './types/index.js';
@@ -248,6 +254,25 @@ app.post('/sniper/start', async (_req, res) => {
 app.post('/sniper/stop', async (_req, res) => {
   setSniperRunning(false);
   res.json({ success: true, message: 'Sniper pausiert' });
+});
+
+app.post('/force-handshake', async (_req, res) => {
+  try {
+    const client = getGlobalClient();
+    if (!client) {
+      res.status(503).json({ error: 'Database not initialized' });
+      return;
+    }
+    const config = await getFullConfig(client);
+    const guest = await fetchGuestCookiesOnce(config.antiBot);
+    if (guest) {
+      res.json({ success: true, message: 'Handshake erfolgreich', hasAccessToken: true });
+    } else {
+      res.json({ success: false, message: 'Handshake fehlgeschlagen - bitte Proxy prüfen' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 app.get('/system/health', async (_req, res) => {
